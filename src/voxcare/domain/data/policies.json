@@ -1,0 +1,192 @@
+{
+  "corpus_id": "VOXCOM-DEMO-POLICY-V1",
+  "corpus_version": "1.0-demo",
+  "language": "en",
+  "market": "VN",
+  "channel": "VOICE_CSKH",
+  "is_fictional": true,
+  "notice": "Fictional prototype demo business terms authored for the VoxCare prototype. These are not real VoxCom business terms, manufacturer warranty terms, legal advice, statutory consumer rights, or a guarantee. Every clause carries its mandatory [Fictional VoxCom Demo Policy v1.0] header and is_fictional=true. Clause texts are transcribed verbatim from spec 42 §8.2 (02_research/42_voxcare_p1_detailed_design.md); the source_reference of each clause names that section. LaTeX markup of the spec source is rendered as plain text without changing terms.",
+  "scope_note": "Full 9-clause demo corpus per spec 42 §8.2: 2 SHIPPING, 2 INSTALLATION, 3 WARRANTY, 2 RETURNS. Retrieval is deterministic lexical overlap (see policy.py); the prototype labels this a demo simplification of the spec §8.2 vector design (top_k=3, threshold 0.70). Stored categories never include ALL.",
+  "clauses": [
+    {
+      "policy_id": "POL-SHIP-001",
+      "clause_ref": "Clause 1.1",
+      "category": "SHIPPING",
+      "title": "Standard Delivery Radius & Tiered Distance Surcharge",
+      "header": "[Fictional VoxCom Demo Policy v1.0, Market: VN, Language: EN, Channel: Voice CSKH, Scope: Consumer Electronics]",
+      "content_en": "Complimentary standard ground delivery is provided for customer purchase orders with a cart subtotal exceeding 500,000 VND within a 10 km radial distance from the nearest VoxCom fulfillment hub. For delivery destinations situated between 10 km and 30 km from the hub, a distance logistics surcharge of 10,000 VND/km applies for standard appliances. Deliveries exceeding 30 km require regional freight quotation.",
+      "source_reference": "02_research/42_voxcare_p1_detailed_design.md §8.2.1",
+      "applicability_rules": {
+        "market": "VN",
+        "channel": "VOICE_CSKH",
+        "product_categories": "ALL",
+        "brands": "ALL",
+        "conditions": "cart subtotal, distance and appliance terms in clause",
+        "version_active": "1.0-demo"
+      },
+      "corpus_id": "VOXCOM-DEMO-POLICY-V1",
+      "clause_version": "1.0-demo",
+      "is_fictional": true
+    },
+    {
+      "policy_id": "POL-SHIP-002",
+      "clause_ref": "Clause 1.2",
+      "category": "SHIPPING",
+      "title": "Bulky Appliance Logistics, Manual Stair Carry & COD Limits",
+      "header": "[Fictional VoxCom Demo Policy v1.0, Market: VN, Language: EN, Channel: Voice CSKH, Scope: Consumer Electronics]",
+      "content_en": "Major bulky appliances (refrigerators over 300L, washing machines over 9kg, and television displays over 55 inches) are dispatched with dedicated 2-person delivery handling. In residential premises lacking functional freight elevator access, manual stair carriage incurs an auxiliary handling fee of 50,000 VND/floor commencing from the second floor. Cash on Delivery (COD) payment is authorized up to a ceiling of 20,000,000 VND per order. Exterior carton unboxing inspection for cosmetic transit damage is permitted prior to payment collection.",
+      "source_reference": "02_research/42_voxcare_p1_detailed_design.md §8.2.1",
+      "applicability_rules": {
+        "market": "VN",
+        "channel": "VOICE_CSKH",
+        "product_categories": ["REFRIGERATOR", "WASHING_MACHINE", "TV_AV"],
+        "brands": "ALL",
+        "conditions": "bulky product thresholds and logistics terms in clause",
+        "version_active": "1.0-demo"
+      },
+      "corpus_id": "VOXCOM-DEMO-POLICY-V1",
+      "clause_version": "1.0-demo",
+      "is_fictional": true
+    },
+    {
+      "policy_id": "POL-INST-001",
+      "clause_ref": "Clause 2.1",
+      "category": "INSTALLATION",
+      "title": "Complimentary Standard Installation Scope",
+      "header": "[Fictional VoxCom Demo Policy v1.0, Market: VN, Language: EN, Channel: Voice CSKH, Scope: Consumer Electronics]",
+      "content_en": "Standard complimentary installation service covers table-top pedestal assembly for television displays, factory water inlet and drainage hose connections for washing machines, and level positioning with initial electrical power-on test for refrigerators.",
+      "source_reference": "02_research/42_voxcare_p1_detailed_design.md §8.2.2",
+      "applicability_rules": {
+        "market": "VN",
+        "channel": "VOICE_CSKH",
+        "product_categories": ["TV_AV", "WASHING_MACHINE", "REFRIGERATOR"],
+        "brands": "ALL",
+        "conditions": "standard installation tasks in clause",
+        "version_active": "1.0-demo"
+      },
+      "corpus_id": "VOXCOM-DEMO-POLICY-V1",
+      "clause_version": "1.0-demo",
+      "is_fictional": true
+    },
+    {
+      "policy_id": "POL-INST-002",
+      "clause_ref": "Clause 2.2",
+      "category": "INSTALLATION",
+      "title": "Wall Mounting, Masonry Drilling & Auxiliary Material Pricing",
+      "header": "[Fictional VoxCom Demo Policy v1.0, Market: VN, Language: EN, Channel: Voice CSKH, Scope: Consumer Electronics]",
+      "content_en": "Structural masonry drilling, specialized wall-mount brackets, and air-conditioning copper piping exceeding the factory-bundled 3m length are billed strictly according to VoxCom's published auxiliary materials price schedule. Service technicians are mandated to provide an itemized printed or digital quotation and obtain oral or signed customer confirmation prior to commencing drilling or installation.",
+      "source_reference": "02_research/42_voxcare_p1_detailed_design.md §8.2.2",
+      "applicability_rules": {
+        "market": "VN",
+        "channel": "VOICE_CSKH",
+        "product_categories": ["TV_AV", "AIR_CONDITIONER"],
+        "brands": "ALL",
+        "conditions": "wall mounting and auxiliary material terms in clause",
+        "version_active": "1.0-demo"
+      },
+      "corpus_id": "VOXCOM-DEMO-POLICY-V1",
+      "clause_version": "1.0-demo",
+      "is_fictional": true
+    },
+    {
+      "policy_id": "POL-WAR-001",
+      "clause_ref": "Clause 3.1",
+      "category": "WARRANTY",
+      "title": "Samsung Brand Warranty & Purchase Date Inverter Tiering",
+      "header": "[Fictional VoxCom Demo Policy v1.0, Market: VN, Language: EN, Channel: Voice CSKH, Scope: Consumer Electronics]",
+      "content_en": "Samsung consumer electronics feature a 24-month comprehensive manufacturer warranty from the official date of purchase. For Digital Inverter components (refrigerator compressors and washing machine motors), warranty duration is tiered by purchase date in alignment with official manufacturer terms: (1) Products purchased between 01/11/2022 and 31/03/2026: 20-year warranty on Digital Inverter compressor/motor. (2) Products purchased from 01/04/2026 onward: 10-year warranty on Digital Inverter compressor/motor. In-home certified technician dispatch is provided for television displays 43 inches and above and all major domestic appliances. Warranty strictly excludes physical display panel impact cracks, liquid or moisture ingress, lightning surges, and unauthorized chassis disassembly.",
+      "source_reference": "02_research/42_voxcare_p1_detailed_design.md §8.2.3",
+      "applicability_rules": {
+        "market": "VN",
+        "channel": "VOICE_CSKH",
+        "product_categories": "ALL",
+        "brands": ["Samsung"],
+        "conditions": "purchase date, inverter tier and exclusions in clause",
+        "version_active": "1.0-demo"
+      },
+      "corpus_id": "VOXCOM-DEMO-POLICY-V1",
+      "clause_version": "1.0-demo",
+      "is_fictional": true
+    },
+    {
+      "policy_id": "POL-WAR-002",
+      "clause_ref": "Clause 3.2",
+      "category": "WARRANTY",
+      "title": "LG Brand Warranty & Inverter Direct Drive Protection",
+      "header": "[Fictional VoxCom Demo Policy v1.0, Market: VN, Language: EN, Channel: Voice CSKH, Scope: Consumer Electronics]",
+      "content_en": "LG consumer electronics carry a 24-month comprehensive parts and labor warranty. Inverter Direct Drive washing machine motors and Smart Inverter refrigerator compressors carry a 10-year extended component warranty. In-home warranty inspection is complimentary within metropolitan municipal boundaries for major appliances.",
+      "source_reference": "02_research/42_voxcare_p1_detailed_design.md §8.2.3",
+      "applicability_rules": {
+        "market": "VN",
+        "channel": "VOICE_CSKH",
+        "product_categories": "ALL",
+        "brands": ["LG"],
+        "conditions": "warranty coverage and exclusions in clause",
+        "version_active": "1.0-demo"
+      },
+      "corpus_id": "VOXCOM-DEMO-POLICY-V1",
+      "clause_version": "1.0-demo",
+      "is_fictional": true
+    },
+    {
+      "policy_id": "POL-WAR-003",
+      "clause_ref": "Clause 3.3",
+      "category": "WARRANTY",
+      "title": "Panasonic Brand Warranty & Component Terms",
+      "header": "[Fictional VoxCom Demo Policy v1.0, Market: VN, Language: EN, Channel: Voice CSKH, Scope: Consumer Electronics]",
+      "content_en": "Panasonic domestic appliances feature 24 months of standard warranty coverage in Vietnam (12 months for select television and portable audio models). Panasonic Inverter refrigerator compressors are warranted for 12 years; washing machine motors are warranted for 10 years. Official service dispatch is arranged via authorized service centers or customer hotline 1800 1593.",
+      "source_reference": "02_research/42_voxcare_p1_detailed_design.md §8.2.3",
+      "applicability_rules": {
+        "market": "VN",
+        "channel": "VOICE_CSKH",
+        "product_categories": "ALL",
+        "brands": ["Panasonic"],
+        "conditions": "model-specific warranty terms in clause",
+        "version_active": "1.0-demo"
+      },
+      "corpus_id": "VOXCOM-DEMO-POLICY-V1",
+      "clause_version": "1.0-demo",
+      "is_fictional": true
+    },
+    {
+      "policy_id": "POL-RET-001",
+      "clause_ref": "Clause 4.1",
+      "category": "RETURNS",
+      "title": "30-Day 1-for-1 Defective Replacement Window",
+      "header": "[Fictional VoxCom Demo Policy v1.0, Market: VN, Language: EN, Channel: Voice CSKH, Scope: Consumer Electronics]",
+      "content_en": "Retail customers are entitled to a 1-for-1 identical product replacement within 30 calendar days from the validated date of delivery if the product exhibits functional manufacturing defects certified by a VoxCom or authorized brand technician. The item must be accompanied by the original manufacturer packaging carton, protective styrofoam, bundled accessories, and matching serial number.",
+      "source_reference": "02_research/42_voxcare_p1_detailed_design.md §8.2.4",
+      "applicability_rules": {
+        "market": "VN",
+        "channel": "VOICE_CSKH",
+        "product_categories": "ALL",
+        "brands": "ALL",
+        "conditions": "delivery date, technician certification and packaging terms in clause",
+        "version_active": "1.0-demo"
+      },
+      "corpus_id": "VOXCOM-DEMO-POLICY-V1",
+      "clause_version": "1.0-demo",
+      "is_fictional": true
+    },
+    {
+      "policy_id": "POL-RET-002",
+      "clause_ref": "Clause 4.2",
+      "category": "RETURNS",
+      "title": "Return Freight & Restocking Evaluation Conditions",
+      "header": "[Fictional VoxCom Demo Policy v1.0, Market: VN, Language: EN, Channel: Voice CSKH, Scope: Consumer Electronics]",
+      "content_en": "If a return is initiated due to verified manufacturer defect or delivery of an incorrect SKU, VoxCom assumes 100% of reverse logistics collection costs. Return requests based on customer change-of-mind are subject to individual merchant review; unopened products in original factory seal may be accepted subject to return freight and inspection guidelines established by store management.",
+      "source_reference": "02_research/42_voxcare_p1_detailed_design.md §8.2.4",
+      "applicability_rules": {
+        "market": "VN",
+        "channel": "VOICE_CSKH",
+        "product_categories": "ALL",
+        "brands": "ALL",
+        "conditions": "defect, incorrect SKU, change-of-mind and inspection terms in clause",
+        "version_active": "1.0-demo"
+      },
+      "corpus_id": "VOXCOM-DEMO-POLICY-V1",
+      "clause_version": "1.0-demo",
+      "is_fictional": true
+    }
+  ]
+}

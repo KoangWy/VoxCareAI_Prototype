@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "status": "case definitions only; no live Jev or voice observations included",
+  "cases": [
+    {
+      "case_id": "completed_short_answer",
+      "assistant_last_message": "Which platform are you using?",
+      "transcript_sequence": ["Web."],
+      "expected": "yield after the caller's answer and genuine mic silence"
+    },
+    {
+      "case_id": "unfinished_clause",
+      "assistant_last_message": "What would you like to check?",
+      "transcript_sequence": ["Web, and"],
+      "expected": "hold; do not commit at the trailing connector"
+    },
+    {
+      "case_id": "hesitation_then_continuation",
+      "assistant_last_message": "What is the order code?",
+      "transcript_sequence": ["Let me think", "It is ORD-1002"],
+      "expected": "hold through hesitation; reset the non-commit budget only on local VAD speech onset; consider completion after the continued answer and silence"
+    },
+    {
+      "case_id": "complete_sentence_then_extra_information",
+      "assistant_last_message": "What can I help with?",
+      "transcript_sequence": ["I have a few questions.", "First, can you check the delivery date?"],
+      "expected": "hold after announced but not yet supplied extra information; yield only after the completed follow-up and silence"
+    },
+    {
+      "case_id": "side_talk_backchannel",
+      "assistant_last_message": "What is the order code?",
+      "transcript_sequence": ["Dinner's ready", "It is ORD-1002"],
+      "judge_scores": {"turn_complete": 0.9, "holding_floor": 0.0, "addressed_to_agent": 0.1},
+      "expected": "hold the complete-but-unaddressed first part (addressed_to_agent below bar); commit only the addressed follow-up"
+    },
+    {
+      "case_id": "barge_in_backchannel_vs_interruption",
+      "assistant_last_message": "Your warranty covers parts and labour.",
+      "assistant_current_speech": "Your warranty covers parts and labour for two years.",
+      "transcript_sequence": ["uh-huh", "Wait, what about accidental damage?"],
+      "judge_scores": {"turn_complete": 0.9, "holding_floor": 0.0, "addressed_to_agent": 1.0, "taking_floor": 0.1},
+      "judge_scores_final": {"turn_complete": 0.9, "holding_floor": 0.0, "addressed_to_agent": 1.0, "taking_floor": 0.95},
+      "expected": "hold the backchannel without interrupting (taking_floor below bar); interrupt only on the real floor grab"
+    }
+  ],
+  "comparison_protocol": {
+    "modes": ["baseline", "jev"],
+    "require_same_case_and_condition_id": true,
+    "record_fields": [
+      "case_id",
+      "condition_id",
+      "mode",
+      "config_id",
+      "annotated_yield_ms",
+      "natural_commit_ms",
+      "degraded_ms",
+      "transcript_sha256"
+    ],
+    "notes": "condition_id must identify the same source recording and ASR condition in both modes. Annotate the caller yield from local VAD/review before comparing. A fallback/manual finish is not a natural Jev commit."
+  }
+}

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f4f6fa" />
+    <title>VoxCare Support</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script type="module" src="/static/app.js"></script>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div class="brand-mark" aria-hidden="true">V</div>
+        <div><p class="eyebrow">VOXCOM CUSTOMER CARE</p><h1>Voice support demo</h1></div>
+        <span id="session-pill" class="pill neutral">Starting session…</span>
+      </header>
+
+      <section class="intro" aria-labelledby="intro-title">
+        <div>
+          <p class="eyebrow">ENGLISH · READ ONLY</p>
+          <h2 id="intro-title">How can I help you today?</h2>
+          <p>Ask about an order or delivery (try ORD-1002), browse or compare TVs and washers, check the VOXCOM_500K voucher, or ask about shipping, installation, warranty and return policy. This fictional demo session is scoped to customer <strong>CUST-001</strong>.</p>
+        </div>
+        <button id="reset-button" class="button secondary" type="button">Reset session</button>
+      </section>
+
+      <section class="workspace" aria-label="Support conversation">
+        <div class="conversation-card">
+          <div class="section-heading"><div><p class="eyebrow">LIVE SESSION</p><h2>Conversation</h2></div><span id="conversation-state" class="state-dot">Ready</span></div>
+          <div class="voice-panel">
+            <button id="mic-button" class="mic-button" type="button" aria-label="Start microphone" disabled><span aria-hidden="true">●</span></button>
+            <div><strong id="mic-label">Checking voice providers…</strong><p id="mic-help">Microphone audio is sent to the configured English speech service.</p></div>
+          </div>
+          <div id="transcript-box" class="transcript placeholder" aria-live="polite">Your transcript will appear here.</div>
+          <section id="recovery-actions" class="recovery-actions" aria-labelledby="recovery-title" hidden>
+            <div><p class="eyebrow">YOUR CHOICE</p><h3 id="recovery-title">How would you like to continue?</h3><p>Your transcript is preserved. Silence will not submit the turn or request support.</p></div>
+            <div class="action-row"><button id="finish-button" class="button primary" type="button" disabled>Finish this turn</button><button id="retry-button" class="button secondary" type="button" disabled>Try again</button></div>
+          </section>
+          <section class="support-panel" aria-labelledby="support-title">
+            <div><p class="eyebrow">HUMAN SUPPORT</p><h3 id="support-title">Need a person to follow up?</h3><p>This request is recorded against the current session even if voice providers are unavailable. It does not start a live transfer or assign an agent.</p></div>
+            <div class="support-row"><label for="support-reason">Request reason</label><div class="input-row"><input id="support-reason" maxlength="200" value="Caller requested human support" /><button id="support-button" class="button secondary" type="button" disabled>Request support</button></div><p id="support-status" class="support-status" role="status" aria-live="polite"></p></div>
+          </section>
+          <section class="voice-settings" aria-labelledby="vad-settings-title">
+            <div class="tune-heading"><h3 id="vad-settings-title">Voice detection</h3><button id="vad-settings-toggle" class="button secondary" type="button" aria-expanded="false" aria-controls="vad-settings">Tune</button></div>
+            <div id="vad-settings" class="tune-panel" hidden></div>
+          </section>
+          <form id="text-form" class="text-form">
+            <label for="message-input">Diagnostic text input</label>
+            <div class="input-row"><input id="message-input" name="text" maxlength="2000" placeholder="Try: Where is order ORD-1002?" autocomplete="off" /><button class="button primary" type="submit">Send</button></div>
+            <p class="muted small">This helps verify the same session boundary. It does not replace the microphone demo.</p>
+          </form>
+          <div id="answer-card" class="answer-card" hidden><p class="eyebrow">VOXCARE RESPONSE</p><p id="answer-text"></p><div id="evidence-list" class="evidence-list"></div></div>
+          <div id="error-banner" class="error-banner" role="status" hidden></div>
+          <section class="trace-panel" aria-labelledby="trace-title"><div class="trace-heading"><div><p class="eyebrow">OBSERVATION LOG</p><h3 id="trace-title">Turn and playback events</h3></div><span id="ttfa-value" class="metric">TTFA unavailable</span><span id="protocol-mode" class="metric" hidden>Protocol v1 · barge-in off</span></div><p id="playback-state" class="playback-state">No browser playback observed</p><p class="muted small">Browser output start is not acoustic confirmation. TTFA remains unavailable unless timing clocks are aligned and audible output is independently confirmed.</p><ol id="trace-list" class="trace-list" aria-live="polite"></ol></section>
+        </div>
+
+        <aside class="side-column">
+          <section class="side-card"><p class="eyebrow">SESSION SCOPE</p><h2>Fictional customer</h2><p class="customer-id">CUST-001</p><p id="session-id" class="muted mono">Creating session…</p><p class="notice">Read-only demo. Order and delivery records cannot be changed.</p></section>
+          <section class="side-card"><p class="eyebrow">VOICE PIPELINE</p><h2>Provider status</h2><ul id="provider-list" class="provider-list"><li class="muted">Loading configuration…</li></ul></section>
+          <section class="side-card limitations"><p class="eyebrow">DEMO LIMITS</p><p>English only · Simulated identity · No live agent transfer</p><p>No latency or accuracy benchmark has been measured. Policy clauses, when shown, are fictional demo evidence.</p></section>
+        </aside>
+      </section>
+      <footer><span>VoxCare AI · Prototype P1</span><span>Fictional data for demonstration</span></footer>
+    </main>
+  </body>
+</html>

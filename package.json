@@ -1,0 +1,13 @@
+{
+  "name": "voxcare-ai-frontend",
+  "private": true,
+  "description": "Browser client tests for VoxCare AI (no runtime dependencies, no build step).",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test \"tests/frontend/*.test.mjs\"",
+    "check:static": "node scripts/check_static.mjs"
+  }
+}

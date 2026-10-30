@@ -1,0 +1,37 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Node (frontend tests need no packages, but keep the tree clean)
+node_modules/
+
+# Downloaded demo models (scripts/fetch_demo_models.py)
+models/
+
+# Local run artifacts
+*.log
+observed-results*.jsonl
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Finder/iCloud conflict copies ("name 2.ext")
+* [0-9].*
+* [0-9]

@@ -1,6 +1,6 @@
 # Policy sources
 
-Prototype corpus `src/voxcare/domain/data/policies.json` (`VOXCOM-DEMO-POLICY-V1`, `1.0-demo`, `is_fictional=true`) is loaded and validated once by `src/voxcare/domain/policy.py` (`_load_corpus`) and served by `SessionBoundary` through the model-visible `retrieve_policy_clauses` tool.
+Prototype corpus `src/voxcare/domain/data/policies.json` (`VOXCOM-DEMO-POLICY-V1`, `1.0-demo`, `is_fictional=true`) is loaded and validated by `src/voxcare/storage/vector_store.py` (`load_corpus`), indexed in the Chroma collection `voxcom_policy_v1`, and served through the `retrieve_policy_clauses` tool (`domain/services/policy.py`). `scripts/sync_policy_corpus.py` checks every clause against the design text.
 
 ## Verbatim source of each clause
 
@@ -22,7 +22,7 @@ Stored categories are `SHIPPING` / `INSTALLATION` / `WARRANTY` / `RETURNS`; `ALL
 
 ## Retrieval honesty
 
-Retrieval is deterministic lexical overlap (`domain/policy.py`, minimum coverage 0.2), explicitly a demo simplification of the spec §8.2 vector design (`top_k=3`, similarity threshold 0.70). Scores are overlap ratios, not semantic similarities, and must never be compared with the design's 0.70 threshold. `INSUFFICIENT_EVIDENCE` / `NEEDS_CONTEXT` envelopes report honestly when no clause applies.
+Retrieval follows the design's vector pipeline (topic filter, applicability filter, top-k = 3, similarity gate). The gate is calibrated for the embedding model actually used (0.32 for all-MiniLM-L6-v2, measured on 50 queries), not the design's 0.70, whose model is unnamed (G-10); see [POLICY_RETRIEVAL.md](POLICY_RETRIEVAL.md). Below the gate the tool returns `INSUFFICIENT_EVIDENCE` (http 200) and the bot admits it has no matching clause.
 
 ## Verified external sources (shape/scope only)
 

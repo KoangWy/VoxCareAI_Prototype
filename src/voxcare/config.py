@@ -29,6 +29,7 @@ VALID_BARGE_IN_MODES = ("off", "semantic")
 VALID_ASR_PROVIDERS = ("deepgram", "vosk")
 VALID_TTS_PROVIDERS = ("elevenlabs", "piper")
 VALID_OPENAI_TRANSPORTS = ("responses", "chat")
+VALID_CONVERSATION_PROVIDERS = ("openai", "anthropic", "keyword")
 
 TYPESAFE_JUDGE_TIMEOUT_MS = 300
 TYPESAFE_HOLD_DEADLINE_MS = 3000
@@ -116,6 +117,7 @@ class ProviderSettings:
 
     asr_provider: str = "deepgram"
     tts_provider: str = "elevenlabs"
+    conversation_provider: str = "openai"
     openai_transport: str = "responses"
     openai_model: str = "gpt-6-luna"
     openai_base_url: str | None = None
@@ -186,6 +188,12 @@ def load_provider_settings(env: Mapping[str, str] | None = None) -> ProviderSett
         tts_provider=_parse_choice(
             get("VOXCARE_TTS_PROVIDER"), field="VOXCARE_TTS_PROVIDER", default="elevenlabs", valid=VALID_TTS_PROVIDERS
         ),
+        conversation_provider=_parse_choice(
+            get("VOXCARE_CONVERSATION_PROVIDER"),
+            field="VOXCARE_CONVERSATION_PROVIDER",
+            default="openai",
+            valid=VALID_CONVERSATION_PROVIDERS,
+        ),
         openai_transport=_parse_choice(
             get("VOXCARE_OPENAI_TRANSPORT"),
             field="VOXCARE_OPENAI_TRANSPORT",
@@ -210,6 +218,92 @@ def load_provider_settings(env: Mapping[str, str] | None = None) -> ProviderSett
     )
 
 
+VALID_DATA_BACKENDS = ("postgres", "memory")
+VALID_POLICY_EMBEDDINGS = ("minilm", "hashing")
+VALID_CLOCKS = ("demo", "system")
+VALID_WRITE_MODES = ("record_only", "fake_oms")
+
+
+def _parse_flag(raw: str | None, *, field: str, default: bool) -> bool:
+    if raw is None or not raw.strip():
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "on", "yes"}:
+        return True
+    if value in {"0", "false", "off", "no"}:
+        return False
+    raise ConfigError(f"{field} must be on or off, got {raw.strip()!r}")
+
+
+@dataclass(frozen=True)
+class DataSettings:
+    """Stores, retrieval and the P1 proposal flags (guide §1, §3.2, §4)."""
+
+    backend: str
+    database_url: str | None
+    db_schema: str
+    db_reset_on_start: bool
+    redis_url: str | None
+    chroma_path: str | None
+    policy_embedding: str
+    rag_threshold: float | None  # None: the calibrated default of the embedding model
+    rag_top_k: int
+    tool_timeout_ms: int
+    session_ttl_s: int
+    pending_action_ttl_s: int
+    clock: str
+    fr_auth_01: bool
+    fr_auth_02: bool
+    fr_sec_01: bool
+    write_mode: str
+
+
+def load_data_settings(env: Mapping[str, str] | None = None) -> DataSettings:
+    source = os.environ if env is None else env
+    get = source.get
+    chroma = get("CHROMA_PATH")
+    chroma_path = "data/chroma" if chroma is None else (chroma.strip() or None)
+    if chroma_path == ":memory:":
+        chroma_path = None
+    threshold_raw = get("VOXCARE_RAG_THRESHOLD")
+    return DataSettings(
+        backend=_parse_choice(
+            get("VOXCARE_DATA_BACKEND"), field="VOXCARE_DATA_BACKEND", default="postgres", valid=VALID_DATA_BACKENDS
+        ),
+        database_url=_parse_text(get("DATABASE_URL")),
+        db_schema=_parse_text(get("VOXCARE_DB_SCHEMA"), "voxcare") or "voxcare",
+        db_reset_on_start=_parse_flag(
+            get("VOXCARE_DB_RESET_ON_START"), field="VOXCARE_DB_RESET_ON_START", default=False
+        ),
+        redis_url=_parse_text(get("REDIS_URL")),
+        chroma_path=chroma_path,
+        policy_embedding=_parse_choice(
+            get("VOXCARE_POLICY_EMBEDDING"),
+            field="VOXCARE_POLICY_EMBEDDING",
+            default="minilm",
+            valid=VALID_POLICY_EMBEDDINGS,
+        ),
+        rag_threshold=None
+        if threshold_raw is None or not threshold_raw.strip()
+        else _parse_unit_float(threshold_raw, field="VOXCARE_RAG_THRESHOLD", default=0.70),
+        rag_top_k=_parse_positive_int(get("VOXCARE_RAG_TOP_K"), field="VOXCARE_RAG_TOP_K", default=3),
+        tool_timeout_ms=_parse_positive_int(
+            get("VOXCARE_TOOL_TIMEOUT_MS"), field="VOXCARE_TOOL_TIMEOUT_MS", default=1500
+        ),
+        session_ttl_s=_parse_positive_int(get("VOXCARE_SESSION_TTL_S"), field="VOXCARE_SESSION_TTL_S", default=1800),
+        pending_action_ttl_s=_parse_positive_int(
+            get("VOXCARE_PENDING_ACTION_TTL_S"), field="VOXCARE_PENDING_ACTION_TTL_S", default=300
+        ),
+        clock=_parse_choice(get("VOXCARE_CLOCK"), field="VOXCARE_CLOCK", default="demo", valid=VALID_CLOCKS),
+        fr_auth_01=_parse_flag(get("VOXCARE_FR_AUTH_01"), field="VOXCARE_FR_AUTH_01", default=True),
+        fr_auth_02=_parse_flag(get("VOXCARE_FR_AUTH_02"), field="VOXCARE_FR_AUTH_02", default=True),
+        fr_sec_01=_parse_flag(get("VOXCARE_FR_SEC_01"), field="VOXCARE_FR_SEC_01", default=True),
+        write_mode=_parse_choice(
+            get("VOXCARE_WRITE_MODE"), field="VOXCARE_WRITE_MODE", default="record_only", valid=VALID_WRITE_MODES
+        ),
+    )
+
+
 def config_error_code(error: ConfigError, prefix: str = "TURN_CONFIG_INVALID") -> str:
     """Stable ``<PREFIX>:<VARIABLE>`` code for a settings failure."""
     return f"{prefix}:{str(error).split(' ', 1)[0]}"
@@ -223,11 +317,16 @@ __all__ = [
     "TYPESAFE_HOLD_DEADLINE_MS",
     "TYPESAFE_JUDGE_TIMEOUT_MS",
     "VALID_BARGE_IN_MODES",
+    "VALID_CONVERSATION_PROVIDERS",
+    "VALID_DATA_BACKENDS",
+    "VALID_POLICY_EMBEDDINGS",
     "VALID_TURN_MODES",
     "ConfigError",
+    "DataSettings",
     "ProviderSettings",
     "TurnSettings",
     "config_error_code",
+    "load_data_settings",
     "load_provider_settings",
     "load_turn_settings",
     "turn_mode_from_env",

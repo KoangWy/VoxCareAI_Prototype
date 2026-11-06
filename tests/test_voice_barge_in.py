@@ -172,7 +172,9 @@ class BargeInMatrixTests(unittest.TestCase):
                 session, asr = self.open_session(
                     patch, client, judge=judge, tts_cls=BlockingTTS, extra_env={"VOXCARE_BARGE_IN": "semantic"}
                 )
-                with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+                with client.websocket_connect(
+                    f"/ws/sessions/{session['session_id']}?token={session['token']}"
+                ) as socket:
                     assert socket.receive_json()["type"] == "session"
                     self.commit_a_turn(socket, asr)
                     assert BlockingTTS.last.started.wait(2)
@@ -234,7 +236,9 @@ class BargeInMatrixTests(unittest.TestCase):
                 session, asr = self.open_session(
                     patch, client, judge=judge, tts_cls=BlockingTTS, extra_env={"VOXCARE_BARGE_IN": "semantic"}
                 )
-                with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+                with client.websocket_connect(
+                    f"/ws/sessions/{session['session_id']}?token={session['token']}"
+                ) as socket:
                     assert socket.receive_json()["type"] == "session"
                     self.commit_a_turn(socket, asr)
                     assert BlockingTTS.last.started.wait(2)
@@ -279,7 +283,9 @@ class BargeInMatrixTests(unittest.TestCase):
             with monkeypatch.context() as patch:
                 judge = ScriptedJev([{"turn_complete": 0.95, "holding_floor": 0.0}])
                 session, asr = self.open_session(patch, client, judge=judge, tts_cls=BlockingTTS)
-                with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+                with client.websocket_connect(
+                    f"/ws/sessions/{session['session_id']}?token={session['token']}"
+                ) as socket:
                     assert socket.receive_json()["type"] == "session"
                     self.commit_a_turn(socket, asr)
                     assert BlockingTTS.last.started.wait(2)
@@ -313,7 +319,9 @@ class RejudgeTests(unittest.TestCase):
                 patch.setattr(api.boundary, "turn_controller_factory", lambda: TurnController(judge))
                 patch.setenv("VOXCARE_TURN_MODE", "jev")
                 session = client.post("/api/sessions").json()
-                with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+                with client.websocket_connect(
+                    f"/ws/sessions/{session['session_id']}?token={session['token']}"
+                ) as socket:
                     assert socket.receive_json()["type"] == "session"
                     socket.send_json({"type": "start", "sample_rate": 16_000, "channels": 1, "encoding": "pcm_s16le"})
                     first, _ = receive_until(
@@ -386,7 +394,9 @@ class RejudgeTests(unittest.TestCase):
                 patch.setattr(api.boundary, "turn_controller_factory", lambda: TurnController(judge))
                 patch.setenv("VOXCARE_TURN_MODE", "jev")
                 session = client.post("/api/sessions").json()
-                with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+                with client.websocket_connect(
+                    f"/ws/sessions/{session['session_id']}?token={session['token']}"
+                ) as socket:
                     assert socket.receive_json()["type"] == "session"
                     socket.send_json({"type": "start", "sample_rate": 16_000, "channels": 1, "encoding": "pcm_s16le"})
                     first, _ = receive_until(
@@ -450,7 +460,9 @@ class CloseCodeTests(unittest.TestCase):
                 patch.setattr(api.boundary, "dialogue_factory", lambda: FakeDialogue())
                 patch.setenv("VOXCARE_TURN_MODE", "baseline")
                 session = client.post("/api/sessions").json()
-                with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+                with client.websocket_connect(
+                    f"/ws/sessions/{session['session_id']}?token={session['token']}"
+                ) as socket:
                     assert socket.receive_json()["type"] == "session"
                     socket.send_json({"type": "start", "sample_rate": 16_000, "channels": 1, "encoding": "pcm_s16le"})
                     assert socket.receive_json()["type"] == "voice_started"
@@ -474,7 +486,9 @@ class CloseCodeTests(unittest.TestCase):
                 patch.setattr(api.boundary, "dialogue_factory", lambda: FakeDialogue())
                 patch.setenv("VOXCARE_TURN_MODE", "baseline")
                 session = client.post("/api/sessions").json()
-                with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+                with client.websocket_connect(
+                    f"/ws/sessions/{session['session_id']}?token={session['token']}"
+                ) as socket:
                     assert socket.receive_json()["type"] == "session"
                     socket.send_json({"type": "start", "sample_rate": 16_000, "channels": 1, "encoding": "pcm_s16le"})
                     assert socket.receive_json()["type"] == "voice_started"
@@ -500,7 +514,9 @@ class CloseCodeTests(unittest.TestCase):
                 patch.setattr(api.boundary, "dialogue_factory", lambda: FakeDialogue())
                 patch.setenv("VOXCARE_TURN_MODE", "jev")
                 session = client.post("/api/sessions").json()
-                with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+                with client.websocket_connect(
+                    f"/ws/sessions/{session['session_id']}?token={session['token']}"
+                ) as socket:
                     assert socket.receive_json()["type"] == "session"
                     socket.send_json({"type": "start", "sample_rate": 16_000, "channels": 1, "encoding": "pcm_s16le"})
                     first, _ = receive_until(
@@ -521,7 +537,9 @@ class CloseCodeTests(unittest.TestCase):
                         }
                     )
                     receive_until(socket, lambda m: m.get("type") == "transcript_final")
-                trace = client.get(f"/api/sessions/{session['session_id']}/trace").json()
+                trace = client.get(
+                    f"/api/sessions/{session['session_id']}/trace", headers={"VoxCare-Session-Token": session["token"]}
+                ).json()
                 assert any(e.get("event_type") == "PROVIDER_UTTERANCE_END" for e in trace["events"])
 
     def test_chunked_body_without_content_length_is_capped(self):
@@ -572,7 +590,7 @@ class ProtocolContractTests(unittest.TestCase):
     def test_session_hello_announces_protocol_two(self):
         with TestClient(api.app) as client:
             session = client.post("/api/sessions").json()
-            with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+            with client.websocket_connect(f"/ws/sessions/{session['session_id']}?token={session['token']}") as socket:
                 hello = socket.receive_json()
         self.assertEqual(hello["type"], "session")
         self.assertEqual(hello["protocol"], vm.PROTOCOL_VERSION)
@@ -615,7 +633,7 @@ class VoiceFlowTests(unittest.TestCase):
 
         with TestClient(api.app) as client, pytest.MonkeyPatch().context() as patch:
             session, _ = _open_voice(patch, client, ScriptedJev([]), env={"VOXCARE_BARGE_IN": "semantic"})
-            with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+            with client.websocket_connect(f"/ws/sessions/{session['session_id']}?token={session['token']}") as socket:
                 hello = socket.receive_json()
         self.assertEqual(hello["type"], "session")
         self.assertEqual(hello["barge_in"], "semantic")
@@ -628,7 +646,7 @@ class VoiceFlowTests(unittest.TestCase):
         )
         with TestClient(api.app) as client, pytest.MonkeyPatch().context() as patch:
             session, asr = _open_voice(patch, client, judge)
-            with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+            with client.websocket_connect(f"/ws/sessions/{session['session_id']}?token={session['token']}") as socket:
                 assert socket.receive_json()["type"] == "session"
                 _start_and_speak(socket, asr, "I want to check my order")
                 held, _ = receive_until(
@@ -645,7 +663,7 @@ class VoiceFlowTests(unittest.TestCase):
         judge = ScriptedJev([{"turn_complete": 0.2, "holding_floor": 0.0}])
         with TestClient(api.app) as client, pytest.MonkeyPatch().context() as patch:
             session, asr = _open_voice(patch, client, judge)
-            with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+            with client.websocket_connect(f"/ws/sessions/{session['session_id']}?token={session['token']}") as socket:
                 assert socket.receive_json()["type"] == "session"
                 _start_and_speak(socket, asr, "Um so the thing is")
                 recovery, _ = receive_until(socket, lambda m: m.get("type") == "recovery_required")
@@ -681,7 +699,7 @@ class VoiceFlowTests(unittest.TestCase):
         BlockingTTS.last = None
         with TestClient(api.app) as client, pytest.MonkeyPatch().context() as patch:
             session, asr = _open_voice(patch, client, judge, tts_cls=BlockingTTS, env={"VOXCARE_BARGE_IN": "semantic"})
-            with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+            with client.websocket_connect(f"/ws/sessions/{session['session_id']}?token={session['token']}") as socket:
                 assert socket.receive_json()["type"] == "session"
                 _start_and_speak(socket, asr, "Track ORD-1002")
                 receive_until(socket, lambda m: m.get("type") == "audio_start")
@@ -715,7 +733,9 @@ class VoiceFlowTests(unittest.TestCase):
                         break
                 else:
                     raise AssertionError("audio_end not received")
-            trace = client.get(f"/api/sessions/{session['session_id']}/trace").json()["events"]
+            trace = client.get(
+                f"/api/sessions/{session['session_id']}/trace", headers={"VoxCare-Session-Token": session["token"]}
+            ).json()["events"]
         self.assertTrue(any(event.get("event_type") == "BACKCHANNEL_DISCARDED" for event in trace))
 
 

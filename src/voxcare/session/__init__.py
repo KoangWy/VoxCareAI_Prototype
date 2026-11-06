@@ -1,8 +1,8 @@
-"""Session boundary: per-session state, the read-only tool registry, and grounded answers."""
+"""Session boundary (turn orchestrator), dialogue manager, grounded rendering and voice rendering."""
 
 from __future__ import annotations
 
 from .boundary import MAX_SESSIONS, MAX_TEXT_CHARS, SessionBoundary
-from .tools import MAX_HANDOFF_REASON_CHARS, TOOLS
+from .tools import TOOLS
 
-__all__ = ["MAX_HANDOFF_REASON_CHARS", "MAX_SESSIONS", "MAX_TEXT_CHARS", "TOOLS", "SessionBoundary"]
+__all__ = ["MAX_SESSIONS", "MAX_TEXT_CHARS", "TOOLS", "SessionBoundary"]

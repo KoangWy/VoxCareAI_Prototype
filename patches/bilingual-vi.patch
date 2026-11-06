@@ -1,0 +1,2898 @@
+--- a/src/voxcare/locales.py
++++ b/src/voxcare/locales.py
+@@ -0,0 +1,36 @@
++"""Conversation languages: Vietnamese (vi-VN) and English (en-US).
++
++A session's locale is chosen by the caller when the session starts and stays
++fixed for it; it selects the speech models and the language of every
++rendered answer. Tool arguments and records stay language-neutral (ORD-####
++codes, SKUs, English category enums, integer VND).
++"""
++
++from __future__ import annotations
++
++VI = "vi-VN"
++EN = "en-US"
++SUPPORTED_LOCALES = (VI, EN)
++# What the REST API assumes when a client sends no locale (keeps older clients and
++# scripts on English); the browser UI starts in Vietnamese and always sends one.
++API_DEFAULT_LOCALE = EN
++
++_ALIASES = {"vi": VI, "vi-vn": VI, "vi_vn": VI, "en": EN, "en-us": EN, "en_us": EN}
++
++
++def normalize_locale(value: object) -> str:
++    """Canonical locale for ``vi`` / ``vi-VN`` / ``en`` / ``en-US`` (any case); raises ValueError otherwise."""
++    if value is None:
++        return API_DEFAULT_LOCALE
++    if isinstance(value, str):
++        canonical = _ALIASES.get(value.strip().lower())
++        if canonical:
++            return canonical
++    raise ValueError(f"unsupported locale {value!r}; use one of {', '.join(SUPPORTED_LOCALES)}")
++
++
++def is_vietnamese(locale: str | None) -> bool:
++    return locale == VI
++
++
++__all__ = ["API_DEFAULT_LOCALE", "EN", "SUPPORTED_LOCALES", "VI", "is_vietnamese", "normalize_locale"]
+--- a/static/i18n.js
++++ b/static/i18n.js
+@@ -0,0 +1,103 @@
++// Caller-facing strings in Vietnamese and English, plus the per-language
++// provider view. Pure module (no DOM) so node tests can cover it. Diagnostic
++// panels (trace, tuning, provider details) stay in English on purpose.
++
++export const LOCALES = Object.freeze(['vi-VN', 'en-US']);
++export const DEFAULT_LOCALE = 'vi-VN';
++const STORAGE_KEY = 'voxcare.locale';
++
++const STRINGS = Object.freeze({
++  'vi-VN': Object.freeze({
++    htmlLang: 'vi',
++    languageLabel: 'Ngôn ngữ',
++    introEyebrow: 'TIẾNG VIỆT · CHỈ TRA CỨU',
++    introTitle: 'Tôi có thể giúp gì cho bạn hôm nay?',
++    introBody: 'Hỏi về đơn hàng hoặc giao hàng (thử ORD-1002), tìm hoặc so sánh TV và máy giặt, kiểm tra voucher VOXCOM_500K, hoặc hỏi về chính sách giao hàng, lắp đặt, bảo hành và đổi trả. Phiên demo giả lập này gắn với khách hàng CUST-001.',
++    reset: 'Bắt đầu phiên mới',
++    micStart: 'Bắt đầu nói',
++    micUnavailable: 'Giọng nói tiếng Việt chưa sẵn sàng',
++    micListening: 'Đang nghe…',
++    micHelpListening: 'Hãy nói tự nhiên. Khoảng lặng chỉ được ghi nhận, không tự động kết thúc lượt nói.',
++    micHelpIdle: 'Âm thanh micro được gửi tới dịch vụ nhận dạng tiếng Việt đã cấu hình.',
++    transcriptPlaceholder: 'Lời bạn nói sẽ hiện ở đây.',
++    inputPlaceholder: 'Thử: Đơn hàng ORD-1002 đang ở đâu?',
++    send: 'Gửi',
++    limits: 'Tiếng Việt và tiếng Anh · Danh tính giả lập · Không chuyển máy trực tiếp',
++  }),
++  'en-US': Object.freeze({
++    htmlLang: 'en',
++    languageLabel: 'Language',
++    introEyebrow: 'ENGLISH · READ ONLY',
++    introTitle: 'How can I help you today?',
++    introBody: 'Ask about an order or delivery (try ORD-1002), browse or compare TVs and washers, check the VOXCOM_500K voucher, or ask about shipping, installation, warranty and return policy. This fictional demo session is scoped to customer CUST-001.',
++    reset: 'Reset session',
++    micStart: 'Start speaking',
++    micUnavailable: 'English voice is not ready',
++    micListening: 'Listening…',
++    micHelpListening: 'Speak naturally. Silence is observed, never treated as an automatic end of turn.',
++    micHelpIdle: 'Microphone audio is sent to the configured English speech service.',
++    transcriptPlaceholder: 'Your transcript will appear here.',
++    inputPlaceholder: 'Try: Where is order ORD-1002?',
++    send: 'Send',
++    limits: 'Vietnamese and English · Simulated identity · No live agent transfer',
++  }),
++});
++
++/** A supported locale, falling back to the default for anything else. */
++export function resolveLocale(value) {
++  return LOCALES.includes(value) ? value : DEFAULT_LOCALE;
++}
++
++/** Caller-facing strings for a locale (unknown locales get the default language). */
++export function strings(locale) {
++  return STRINGS[resolveLocale(locale)];
++}
++
++/** The remembered language choice; storage can be missing or throw (private mode, previews). */
++export function loadLocale(storage) {
++  try {
++    return resolveLocale(storage?.getItem(STORAGE_KEY));
++  } catch {
++    return DEFAULT_LOCALE;
++  }
++}
++
++export function saveLocale(storage, locale) {
++  try {
++    storage?.setItem(STORAGE_KEY, resolveLocale(locale));
++  } catch {
++    /* a per-viewer convenience only */
++  }
++}
++
++/**
++ * The provider view for one language: ASR and TTS come from `config.languages[locale]`
++ * (they differ per language); the conversation model and turn judge are shared.
++ */
++export function providersForLocale(config, locale) {
++  const providers = { ...(config?.providers || {}) };
++  const language = config?.languages?.[resolveLocale(locale)];
++  if (language?.asr) providers.asr = language.asr;
++  if (language?.tts) providers.tts = language.tts;
++  return providers;
++}
++
++/** Policy evidence text in the session language (English when no translation exists). */
++export function clauseText(item, locale) {
++  if (resolveLocale(locale) === 'vi-VN' && item?.content_vi) return item.content_vi;
++  return item?.content_en || item?.title || '';
++}
++
++export function clauseTitle(item, locale) {
++  if (resolveLocale(locale) === 'vi-VN' && item?.title_vi) return item.title_vi;
++  return item?.title || '';
++}
++
++/** JSON body for session create/reset. */
++export function sessionRequestInit(locale) {
++  return {
++    method: 'POST',
++    headers: { 'Content-Type': 'application/json' },
++    body: JSON.stringify({ locale: resolveLocale(locale) }),
++  };
++}
+--- a/tests/frontend/i18n.test.mjs
++++ b/tests/frontend/i18n.test.mjs
+@@ -0,0 +1,60 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import {
++  DEFAULT_LOCALE, LOCALES, clauseText, clauseTitle, loadLocale, providersForLocale, resolveLocale,
++  saveLocale, sessionRequestInit, strings,
++} from '../../static/i18n.js';
++
++test('Vietnamese is the default and both languages define the same caller-facing strings', () => {
++  assert.equal(DEFAULT_LOCALE, 'vi-VN');
++  assert.deepEqual(LOCALES, ['vi-VN', 'en-US']);
++  assert.deepEqual(Object.keys(strings('vi-VN')).sort(), Object.keys(strings('en-US')).sort());
++  for (const value of Object.values(strings('vi-VN'))) assert.ok(value.length > 0);
++  assert.equal(strings('xx-YY'), strings('vi-VN'));
++  assert.equal(resolveLocale('en-US'), 'en-US');
++  assert.equal(resolveLocale(undefined), 'vi-VN');
++});
++
++test('the remembered language survives missing or throwing storage', () => {
++  const memory = new Map();
++  const storage = { getItem: (k) => memory.get(k) ?? null, setItem: (k, v) => memory.set(k, v) };
++  assert.equal(loadLocale(storage), 'vi-VN');
++  saveLocale(storage, 'en-US');
++  assert.equal(loadLocale(storage), 'en-US');
++  const broken = { getItem() { throw new Error('SecurityError'); }, setItem() { throw new Error('QuotaExceeded'); } };
++  assert.equal(loadLocale(broken), 'vi-VN');
++  assert.doesNotThrow(() => saveLocale(broken, 'en-US'));
++  assert.equal(loadLocale(null), 'vi-VN');
++});
++
++test('speech providers come from the chosen language, the conversation model is shared', () => {
++  const config = {
++    providers: { asr: { name: 'en asr' }, tts: { name: 'en tts' }, conversation: { name: 'llm', configured: true } },
++    languages: {
++      'vi-VN': { asr: { name: 'vi asr', configured: false }, tts: { name: 'vi tts', configured: true } },
++      'en-US': { asr: { name: 'en asr' }, tts: { name: 'en tts' } },
++    },
++  };
++  const vi = providersForLocale(config, 'vi-VN');
++  assert.equal(vi.asr.name, 'vi asr');
++  assert.equal(vi.tts.name, 'vi tts');
++  assert.equal(vi.conversation.name, 'llm');
++  assert.equal(providersForLocale(config, 'en-US').asr.name, 'en asr');
++  assert.deepEqual(providersForLocale({ providers: { asr: 1 } }, 'vi-VN'), { asr: 1 }); // older server: no languages
++});
++
++test('policy evidence shows the Vietnamese clause when there is one', () => {
++  const item = { content_en: 'English text', content_vi: 'Văn bản tiếng Việt', title: 'Title', title_vi: 'Tiêu đề' };
++  assert.equal(clauseText(item, 'vi-VN'), 'Văn bản tiếng Việt');
++  assert.equal(clauseText(item, 'en-US'), 'English text');
++  assert.equal(clauseText({ content_en: 'only English' }, 'vi-VN'), 'only English');
++  assert.equal(clauseTitle(item, 'vi-VN'), 'Tiêu đề');
++});
++
++test('session create/reset carries the language as JSON', () => {
++  const init = sessionRequestInit('en-US');
++  assert.equal(init.method, 'POST');
++  assert.equal(init.headers['Content-Type'], 'application/json');
++  assert.deepEqual(JSON.parse(init.body), { locale: 'en-US' });
++  assert.deepEqual(JSON.parse(sessionRequestInit('bogus').body), { locale: 'vi-VN' });
++});
+--- a/tests/test_bilingual.py
++++ b/tests/test_bilingual.py
+@@ -0,0 +1,310 @@
++"""Vietnamese and English sessions: locale plumbing, rendered answers, voice rendering, providers."""
++
++import asyncio
++import json
++import re
++import string
++from pathlib import Path
++from typing import ClassVar
++
++import pytest
++from fastapi.testclient import TestClient
++from test_voice_barge_in import FakeASR, _start_and_speak, receive_until
++
++import voxcare.app as api
++from voxcare import providers as voxcare_providers
++from voxcare.contracts import PlannedToolCall
++from voxcare.domain.seed import SeedOMS
++from voxcare.locales import EN, VI, normalize_locale
++from voxcare.providers import ProviderUnavailable, asr_connection_from_env, provider_status, tts_from_env
++from voxcare.session import SessionBoundary
++from voxcare.session.render import TEXT, render_results
++from voxcare.session.speech import POLICY_SCREEN_POINTER_VI, first_sentence, speakable, spoken_reply, vi_number
++from voxcare.session.tools import normalize_spoken_order_codes
++from voxcare.turns import JevJudgment, TurnController
++
++
++class ScriptedDialogue:
++    def __init__(self, *plans):
++        self.plans = list(plans)
++        self.user_texts = []
++
++    async def plan_turn(self, *, user_text, history, available_tools):
++        self.user_texts.append(user_text)
++        return self.plans.pop(0) if self.plans else []
++
++
++ORDER_PLAN = [
++    PlannedToolCall("lookup_order_details", {"order_code": "ORD-1002"}, "c1"),
++    PlannedToolCall("track_shipment_status", {"order_code": "ORD-1002"}, "c2"),
++]
++RETURNS_PLAN = PlannedToolCall(
++    "retrieve_policy_clauses",
++    {"query": "return window for my TV", "category": "RETURNS", "product_category": "TV_AV", "brand": None},
++    "c1",
++)
++
++
++def run_turn(dialogue, text, *, locale=VI, source="manual"):
++    service = SessionBoundary(dialogue=dialogue, oms=SeedOMS())
++
++    async def go():
++        session = await service.create_session(locale)
++        return await service.handle_turn(session.session_id, text, source=source)
++
++    return asyncio.run(go())
++
++
++# -- locale plumbing --
++
++
++@pytest.mark.parametrize(("raw", "canonical"), [("vi", VI), ("VI-vn", VI), ("en", EN), ("en-US", EN), (None, EN)])
++def test_locales_normalize(raw, canonical):
++    assert normalize_locale(raw) == canonical
++
++
++def test_unknown_locale_is_rejected():
++    with pytest.raises(ValueError):
++        normalize_locale("fr-FR")
++
++
++def test_rest_sessions_carry_their_language():
++    with TestClient(api.app) as client:
++        default = client.post("/api/sessions").json()
++        assert default["locale"] == EN  # older clients and scripts stay on English
++        vi = client.post("/api/sessions", json={"locale": "vi"}).json()
++        assert vi["locale"] == VI
++        assert client.post("/api/sessions", json={"locale": "fr"}).status_code == 422
++        kept = client.post(f"/api/sessions/{vi['session_id']}/reset").json()
++        assert kept["locale"] == VI and kept["session_id"] != vi["session_id"]
++        switched = client.post(f"/api/sessions/{kept['session_id']}/reset", json={"locale": "en-US"}).json()
++        assert switched["locale"] == EN
++        handoff = client.post(f"/api/sessions/{vi['session_id']}/handoff", json={}).status_code
++        assert handoff == 404  # the reset fenced the old session
++        fresh = client.post("/api/sessions", json={"locale": VI}).json()
++        message = client.post(f"/api/sessions/{fresh['session_id']}/handoff", json={}).json()["message"]
++        assert message == TEXT[VI]["handoff"]
++
++
++def test_config_reports_speech_readiness_per_language():
++    with TestClient(api.app) as client:
++        config = client.get("/api/config").json()
++    assert config["default_locale"] == VI
++    assert config["locales"] == [VI, EN]
++    assert set(config["languages"]) == {VI, EN}
++    for language in config["languages"].values():
++        assert {"asr", "tts", "voice_ready"} <= set(language)
++
++
++# -- rendered answers --
++
++
++def _fields(template: str) -> set[str]:
++    return {name for _, name, _, _ in string.Formatter().parse(template) if name}
++
++
++def test_every_answer_template_exists_in_both_languages_with_the_same_slots():
++    assert set(TEXT[VI]) == set(TEXT[EN])
++    for key in TEXT[EN]:
++        assert _fields(TEXT[VI][key]) == _fields(TEXT[EN][key]), key
++
++
++def test_vietnamese_order_answer_and_its_spoken_form():
++    result = run_turn(ScriptedDialogue(ORDER_PLAN), "Đơn hàng ORD-1002 đang ở đâu?")
++    assert result.outcome == "ANSWERED"
++    text = result.assistant_text
++    assert "Đơn hàng ORD-1002 đã được gửi đi" in text
++    assert "Sản phẩm: LG 55-inch 4K TV" in text
++    assert "với GHN" in text and "15/10/2026" in text
++    spoken = spoken_reply(text, result.tool_outcomes, VI)
++    assert "ô rờ đê một không không hai" in spoken
++    assert "ngày mười lăm tháng mười năm hai nghìn không trăm hai mươi sáu" in spoken
++    assert not re.search(r"\d", spoken.replace("4K", ""))  # every number is read out in words
++
++
++def test_vietnamese_policy_answer_is_the_translated_clause():
++    result = run_turn(ScriptedDialogue(RETURNS_PLAN), "Chính sách đổi trả TV thế nào?")
++    assert result.outcome == "ANSWERED"
++    for clause in result.evidence:
++        assert clause["content_vi"] in result.assistant_text
++        assert clause["content_en"] not in result.assistant_text
++    assert "POL-RET-001" in result.assistant_text
++    spoken = spoken_reply(result.assistant_text, result.tool_outcomes, VI)
++    assert "POL-" not in spoken
++    assert spoken.endswith(POLICY_SCREEN_POINTER_VI)
++    assert "Còn một điều khoản liên quan khác." in spoken  # numbers are read out in words
++    top = speakable(first_sentence(result.evidence[0]["content_vi"]), VI)
++    assert top in spoken
++
++
++def test_vietnamese_voucher_quote_formats_and_speaks_amounts():
++    plan = PlannedToolCall(
++        "apply_voucher", {"voucher_code": "VOXCOM_500K", "order_value_vnd": 12_000_000, "category": "TV_AV"}, "c1"
++    )
++    result = run_turn(ScriptedDialogue(plan), "Dùng VOXCOM_500K cho TV 12 triệu được không?")
++    assert "giảm 500.000 VND" in result.assistant_text
++    assert "11.500.000 VND" in result.assistant_text
++    spoken = spoken_reply(result.assistant_text, result.tool_outcomes, VI)
++    assert "năm trăm nghìn đồng" in spoken and "mười một triệu năm trăm nghìn đồng" in spoken
++
++
++def test_vietnamese_refusals_and_clarification():
++    out_of_scope = run_turn(
++        ScriptedDialogue([PlannedToolCall("lookup_order_details", {"order_code": "ORD-2002"})]), "x"
++    )
++    assert out_of_scope.assistant_text == TEXT[VI]["order_out_of_scope"]
++    clarify = run_turn(ScriptedDialogue([]), "xin chào")
++    assert clarify.assistant_text == TEXT[VI]["clarify"]
++    handoff = render_results(
++        [type(out_of_scope.tool_outcomes[0])("escalate_to_human", "HANDOFF_REQUEST_RECORDED")], locale=VI
++    )
++    assert handoff == (TEXT[VI]["handoff"], "HANDOFF_REQUEST_RECORDED")
++
++
++def test_english_sessions_are_unchanged():
++    result = run_turn(ScriptedDialogue(ORDER_PLAN), "Where is ORD-1002?", locale=EN)
++    assert result.assistant_text.startswith("Order ORD-1002 is shipped. Item(s): LG 55-inch 4K TV.")
++
++
++def test_policy_translations_keep_every_number():
++    corpus = json.loads(Path("src/voxcare/domain/data/policies.json").read_text(encoding="utf-8"))
++
++    def numbers(text):
++        return sorted(re.findall(r"\d+", re.sub(r"(?<=\d)[.,](?=\d{3}\b)", "", text)))
++
++    for clause in corpus["clauses"]:
++        assert clause["content_vi"].strip() and clause["title_vi"].strip()
++        assert numbers(clause["content_vi"]) == numbers(clause["content_en"]), clause["policy_id"]
++
++
++# -- Vietnamese speech text --
++
++
++@pytest.mark.parametrize(
++    ("n", "words"),
++    [
++        (0, "không"),
++        (15, "mười lăm"),
++        (21, "hai mươi mốt"),
++        (25, "hai mươi lăm"),
++        (105, "một trăm linh năm"),
++        (1002, "một nghìn không trăm linh hai"),
++        (2026, "hai nghìn không trăm hai mươi sáu"),
++        (500_000, "năm trăm nghìn"),
++        (1_050_000, "một triệu không trăm năm mươi nghìn"),
++        (11_500_000, "mười một triệu năm trăm nghìn"),
++        (1_000_000_000, "một tỷ"),
++    ],
++)
++def test_vietnamese_number_words(n, words):
++    assert vi_number(n) == words
++
++
++def test_vietnamese_speakable_units_dates_and_hotlines():
++    spoken = speakable("Phụ phí 10.000 VND/km, ống đồng vượt 3m, tổng đài 1800 1593, mua từ 01/11/2022.", VI)
++    assert spoken == (
++        "Phụ phí mười nghìn đồng mỗi ki lô mét, ống đồng vượt ba mét, tổng đài một tám không không một năm chín ba, "
++        "mua từ ngày một tháng mười một năm hai nghìn không trăm hai mươi hai."
++    )
++
++
++# -- spoken order codes in Vietnamese --
++
++
++@pytest.mark.parametrize(
++    ("heard", "expected"),
++    [
++        ("đơn hàng một không không hai đang ở đâu", "đơn hàng ORD-1002 đang ở đâu"),
++        ("kiểm tra mã đơn số một không không ba", "kiểm tra mã đơn số ORD-1003"),
++        ("ô rờ đê một không không hai", "ORD-1002"),
++        ("đơn là một không không một", "đơn là ORD-1001"),
++        ("tôi muốn đặt hai cái tivi", "tôi muốn đặt hai cái tivi"),
++        ("đơn hàng năm nay một hai ba bốn", "đơn hàng năm nay một hai ba bốn"),
++    ],
++)
++def test_vietnamese_spoken_order_codes(heard, expected):
++    assert normalize_spoken_order_codes(heard)[0] == expected
++
++
++def test_vietnamese_voice_transcript_reaches_the_planner_with_a_canonical_code():
++    dialogue = ScriptedDialogue(ORDER_PLAN)
++    result = run_turn(dialogue, "đơn hàng một không không hai giao chưa", source="asr_final")
++    assert dialogue.user_texts == ["đơn hàng ORD-1002 giao chưa"]
++    assert result.outcome == "ANSWERED"
++
++
++# -- providers per language --
++
++
++def test_vosk_and_piper_need_their_vietnamese_models(monkeypatch, tmp_path):
++    vi_model = tmp_path / "vosk-vi"
++    vi_model.mkdir()
++    voice = tmp_path / "vi.onnx"
++    voice.write_bytes(b"onnx")
++    monkeypatch.setenv("VOXCARE_ASR_PROVIDER", "vosk")
++    monkeypatch.setenv("VOXCARE_TTS_PROVIDER", "piper")
++    with pytest.raises(ProviderUnavailable) as caught:
++        asr_connection_from_env(VI)
++    assert caught.value.code == "VOSK_MODEL_VI_NOT_CONFIGURED"
++    with pytest.raises(ProviderUnavailable) as caught:
++        tts_from_env(VI)
++    assert caught.value.code == "PIPER_MODEL_VI_NOT_CONFIGURED"
++    monkeypatch.setenv("VOXCARE_VOSK_MODEL_VI", str(vi_model))
++    monkeypatch.setenv("VOXCARE_PIPER_MODEL_VI", str(voice))
++    status = provider_status(VI)
++    assert status["asr"].configured and status["asr"].model == "vosk-vi"
++    assert status["tts"].configured and status["tts"].model == "vi.onnx"
++    assert "Vietnamese" in status["asr"].detail
++    assert not provider_status(EN)["asr"].configured  # the English model is still unset
++
++
++def test_deepgram_gets_the_session_language(monkeypatch):
++    monkeypatch.setenv("DEEPGRAM_API_KEY", "unit-test")
++    assert asr_connection_from_env(VI).language == "vi"
++    assert asr_connection_from_env(EN).language == "en-US"
++
++
++# -- the voice socket in a Vietnamese session --
++
++
++class RecordingTTS:
++    texts: ClassVar[list[str]] = []
++
++    @classmethod
++    def from_env(cls):
++        return cls()
++
++    async def stream(self, text):
++        RecordingTTS.texts.append(text)
++        yield b"\x00\x00\x01\x00"
++
++
++class CompleteJudge:
++    async def __call__(self, turn):
++        return JevJudgment(turn_complete=0.95, holding_floor=0.0)
++
++
++def test_vietnamese_voice_session_speaks_vietnamese():
++    RecordingTTS.texts = []
++    dialogue = ScriptedDialogue(ORDER_PLAN)
++    with TestClient(api.app) as client, pytest.MonkeyPatch().context() as patch:
++        asr = FakeASR()
++        patch.setattr(voxcare_providers.DeepgramConnection, "from_env", lambda: asr)
++        patch.setattr(voxcare_providers.ElevenLabsTTS, "from_env", RecordingTTS.from_env)
++        patch.setattr(api.boundary, "dialogue_factory", lambda: dialogue)
++        patch.setattr(api.boundary, "turn_controller_factory", lambda: TurnController(CompleteJudge()))
++        patch.setenv("VOXCARE_TURN_MODE", "jev")
++        session = client.post("/api/sessions", json={"locale": "vi-VN"}).json()
++        with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
++            hello = socket.receive_json()
++            assert hello["session"]["locale"] == VI
++            _start_and_speak(socket, asr, "đơn hàng một không không hai đang ở đâu")
++            turn, _ = receive_until(socket, lambda m: m.get("type") == "turn")
++            for _ in range(60):
++                message = socket.receive()
++                if message.get("text") and json.loads(message["text"]).get("type") == "audio_end":
++                    break
++    assert asr.language == "vi"
++    assert dialogue.user_texts == ["đơn hàng ORD-1002 đang ở đâu"]
++    assert turn["result"]["assistant_text"].startswith("Đơn hàng ORD-1002 đã được gửi đi")
++    assert RecordingTTS.texts and "ô rờ đê một không không hai" in RecordingTTS.texts[0]
+--- a/.env.example
++++ b/.env.example
+@@ -17,6 +17,9 @@
+ VOXCARE_VOSK_MODEL=                # e.g. models/vosk-model-small-en-us-0.15
+ VOXCARE_TTS_PROVIDER=elevenlabs    # elevenlabs | piper
+ VOXCARE_PIPER_MODEL=               # e.g. models/en_US-lessac-medium.onnx
++VOXCARE_VOSK_MODEL_VI=             # Vietnamese sessions, e.g. models/vosk-model-vn-0.4
++VOXCARE_PIPER_MODEL_VI=            # Vietnamese sessions, e.g. models/vi_VN-vais1000-medium.onnx
++ELEVENLABS_VOICE_ID_VI=            # optional ElevenLabs voice for Vietnamese sessions (default: ELEVENLABS_VOICE_ID)
+ VOXCARE_ELEVENLABS_MODEL=eleven_flash_v2_5
+ 
+ # --- Conversation model -------------------------------------------------------
+@@ -53,11 +56,13 @@
+ VOXCARE_LOG_LEVEL=INFO
+ 
+ # --- Local demo stack (no speech-provider keys) --------------------------------
+-# uv run --group demo python scripts/fetch_demo_models.py, then:
++# uv run --group demo python scripts/fetch_demo_models.py --lang all, then:
+ # VOXCARE_ASR_PROVIDER=vosk
+ # VOXCARE_VOSK_MODEL=models/vosk-model-small-en-us-0.15
+ # VOXCARE_TTS_PROVIDER=piper
+ # VOXCARE_PIPER_MODEL=models/en_US-lessac-medium.onnx
++# VOXCARE_VOSK_MODEL_VI=models/vosk-model-vn-0.4
++# VOXCARE_PIPER_MODEL_VI=models/vi_VN-vais1000-medium.onnx
+ # VOXCARE_OPENAI_TRANSPORT=chat
+ # VOXCARE_OPENAI_BASE_URL=https://opencode.ai/zen/go/v1
+ # VOXCARE_OPENAI_MODEL=deepseek-v4.1-flash      # verify against the gateway's /v1/models
+--- a/README.md
++++ b/README.md
+@@ -2,7 +2,7 @@
+ 
+ [![CI](https://github.com/KoangWy/VoxCareAI_Prototype/actions/workflows/ci.yml/badge.svg)](https://github.com/KoangWy/VoxCareAI_Prototype/actions/workflows/ci.yml)
+ 
+-English, browser-based **voice customer-support prototype** for the fictional electronics retailer **VoxCom**. A caller speaks in the browser; the server transcribes the speech, decides when the caller has finished their turn, lets a language model choose read-only lookup tools, and speaks back an answer that is rendered only from tool results.
++Bilingual (Vietnamese and English), browser-based **voice customer-support prototype** for the fictional electronics retailer **VoxCom**. A caller speaks in the browser; the server transcribes the speech, decides when the caller has finished their turn, lets a language model choose read-only lookup tools, and speaks back an answer that is rendered only from tool results.
+ 
+ Every customer, order, shipment, product, voucher and policy clause is fictional. The session is bound server-side to the simulated customer `CUST-001`; this is a demo, not production authentication.
+ 
+@@ -11,6 +11,7 @@
+ - **Streaming voice loop** — browser microphone (Web Audio, AudioWorklet) → 16 kHz PCM over WebSocket → streaming ASR → turn decision → LLM tool planning → streaming TTS back to the browser.
+ - **Judged end-of-turn control** — a deterministic baseline, TypeSafe Jev, or an OpenRouter decisions model answers four questions (turn complete, holding the floor, addressed to the assistant, taking the floor). Code owns every action: silence alone never commits a turn, side-talk never reaches the assistant, and a stuck turn ends in an explicit caller choice (finish / try again / request support).
+ - **Grounded, read-only answers** — seven allowlisted tools: order lookup, shipment tracking, policy retrieval, catalog search, product comparison, voucher quote, and support-request recording. The model only plans tool calls; the answer is rendered from the tool records, so it cannot invent an order status, price, ETA or policy term. The screen shows the full text; TTS speaks a listening-friendly rewrite of it (short policy answers, readable dates, codes and currency).
++- **Vietnamese and English** — the caller picks the language before speaking (the page starts in Tiếng Việt). The choice selects the speech models, and every rendered answer, policy clause and spoken rewrite exists in both languages; tool arguments stay language-neutral (`ORD-####`, SKUs, English enums, integer VND).
+ - **Optional semantic barge-in** — speak over the assistant: a backchannel ("uh-huh") keeps the reply playing, a real floor grab ("wait, stop") interrupts it.
+ - **Two provider stacks, one contract** — the design providers (Deepgram, OpenAI, ElevenLabs) or a fully local demo stack (Vosk, Piper, any OpenAI-compatible gateway), selected by environment variables only.
+ - **Honest observability** — per-session trace (`GET /api/sessions/{id}/trace`), audit rows for tool calls and turn recovery, and no latency claim that the system cannot measure.
+@@ -51,9 +52,11 @@
+ Speech runs locally; only the LLM (and, optionally, the turn judge) needs a key.
+ 
+ ```sh
+-uv run --group demo python scripts/fetch_demo_models.py   # Vosk + Piper voice into models/ (~130 MB, git-ignored)
++uv run --group demo python scripts/fetch_demo_models.py --lang all   # English + Vietnamese Vosk and Piper models into models/ (~270 MB, git-ignored)
+ ```
+ 
++`--lang en` or `--lang vi` downloads one language only. Vietnamese uses `vosk-model-vn-0.4` and the Piper voice `vi_VN-vais1000-medium`.
++
+ The small Vosk model is fast but mis-hears names, codes and accented English. For better recognition, `--vosk lgraph` (~128 MB) or `--vosk large` (~1.8 GB, several GB of RAM) downloads a bigger model and prints the `VOXCARE_VOSK_MODEL` line to use; Deepgram (Option B) is the most accurate choice.
+ 
+ Then in `.env`:
+@@ -63,6 +66,8 @@
+ VOXCARE_VOSK_MODEL=models/vosk-model-small-en-us-0.15
+ VOXCARE_TTS_PROVIDER=piper
+ VOXCARE_PIPER_MODEL=models/en_US-lessac-medium.onnx
++VOXCARE_VOSK_MODEL_VI=models/vosk-model-vn-0.4
++VOXCARE_PIPER_MODEL_VI=models/vi_VN-vais1000-medium.onnx
+ VOXCARE_OPENAI_TRANSPORT=chat
+ VOXCARE_OPENAI_BASE_URL=https://opencode.ai/zen/go/v1   # any OpenAI-compatible gateway
+ VOXCARE_OPENAI_MODEL=deepseek-v4.1-flash                # a tool-calling model id from the gateway's /v1/models
+@@ -99,6 +104,7 @@
+ | `VOXCARE_JEV_MODEL` | per mode | `jev-latest` or `inception/mercury-decide` |
+ | `VOXCARE_JEV_TIMEOUT_MS`, `VOXCARE_HOLD_DEADLINE_MS` | 300 / 3000 (OpenRouter: 2500 / 9000) | Judge budget and HOLD deadline |
+ | `VOXCARE_BARGE_IN` | `off` | `off` (half-duplex) or `semantic` |
++| `VOXCARE_VOSK_MODEL_VI`, `VOXCARE_PIPER_MODEL_VI` | — | Vietnamese Vosk model and Piper voice (Deepgram and ElevenLabs need no extra setting; `ELEVENLABS_VOICE_ID_VI` optionally picks another voice) |
+ | `VOXCARE_LOG_LEVEL` | `INFO` | Python log level |
+ 
+ Turn thresholds and silence windows (`VOXCARE_TURN_COMPLETE_THRESHOLD`, `VOXCARE_EOS_*`, …) are documented in [docs/TURN_CONTROL.md](docs/TURN_CONTROL.md). Variables from the host that are not prefixed `VOXCARE_` (for example `OPENAI_MODEL`) are ignored on purpose.
+@@ -118,6 +124,10 @@
+ | "What is the return window for my LG TV?" | Fictional policy clauses with their IDs |
+ | "I want to talk to a person" | Support request recorded; no live transfer happens |
+ 
++The same questions work in Vietnamese, for example "Đơn hàng ORD-1002 đang ở đâu, khi nào giao?", "Có TV Samsung dưới 15 triệu không?", "Chính sách đổi trả TV LG thế nào?" or "Tôi muốn gặp nhân viên". Spoken codes such as "đơn hàng một không không hai" or "ô rờ đê một không không hai" become `ORD-1002`.
++
++The REST API takes the language as an optional body on `POST /api/sessions` and `POST /api/sessions/{id}/reset` (`{"locale": "vi-VN"}` or `"en-US"`); without one a session is English, so older clients and the test scripts keep working. `GET /api/config` reports speech readiness per language under `languages`.
++
+ Seeded orders: `ORD-1001` confirmed, `ORD-1002` shipped, `ORD-1003` delivered, `ORD-2002` another customer, `ORD-9999` does not exist. The server accepts variants like `ord 1002` or `ORD1002`; voice transcripts also go through a deterministic normalizer that turns spelled or misheard codes ("o r d one zero zero two", "or rd one zero zero two") into `ORD-####` before the model sees them.
+ 
+ **Reset session** starts a fresh simulated session and fences every late result from the old one. The text box under the conversation sends the same request path without the microphone.
+@@ -166,7 +176,7 @@
+ 
+ ## Limitations
+ 
+-- English only; simulated identity; fictional, read-only business data. No business record can be changed and no live human transfer exists.
++- Vietnamese and English only, one language per session (no switching mid-call or automatic language detection); simulated identity; fictional, read-only business data. No business record can be changed and no live human transfer exists.
+ - The local demo stack is a documented deviation from the design provider set. Latency and accuracy are **not measured** on either stack; the design targets (e.g. 755 ms time-to-first-audio, ≥85 % accuracy) are not claimed.
+ - PII masking at the provider edges is pattern-based and incomplete; stored history and live transcripts keep the caller's raw words. Use fictional inputs only.
+ - Semantic barge-in is verified with the headless live harness, not with a physical microphone, so it stays off by default.
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -1,7 +1,7 @@
+ [project]
+ name = "voxcare-ai-prototype"
+ version = "0.1.0"
+-description = "English browser voice customer-support prototype for the fictional retailer VoxCom: streaming ASR, judged end-of-turn control, grounded read-only tools, streaming TTS."
++description = "Vietnamese and English browser voice customer-support prototype for the fictional retailer VoxCom: streaming ASR, judged end-of-turn control, grounded read-only tools, streaming TTS."
+ readme = "README.md"
+ requires-python = ">=3.12,<3.15"
+ keywords = ["voice-assistant", "customer-support", "turn-taking", "fastapi", "websocket", "asr", "tts", "llm"]
+--- a/docs/ARCHITECTURE.md
++++ b/docs/ARCHITECTURE.md
+@@ -8,6 +8,7 @@
+ src/voxcare/
+   app.py               ASGI entry point: `voxcare.app:app` and the process-wide `boundary`
+   config.py            every VOXCARE_* variable, parsed and validated (ConfigError names the variable)
++  locales.py           the two session languages (vi-VN, en-US) and their normalisation
+   contracts.py         PlannedToolCall, ToolOutcome, SessionView, TurnResult, DialogueProvider
+   privacy.py           deterministic PII mask applied at external-provider edges
+   trace.py             bounded per-session event ledger (500 events, oldest dropped first)
+@@ -54,11 +55,11 @@
+ ## Typed request flow (REST)
+ 
+ ```text
+-POST /api/sessions                 validate turn + provider settings → create session (CUST-001)
++POST /api/sessions                 validate turn + provider settings → create session (CUST-001), optional {"locale"}
+ POST /api/sessions/{id}/turns      handle_turn: plan tools → run allowlisted read-only tools → grounded text
+ GET  /api/sessions/{id}/trace      bounded event ledger for the session
+ POST /api/sessions/{id}/handoff    record a support request (never a live transfer)
+-POST /api/sessions/{id}/reset      discard the session and create a fresh one
++POST /api/sessions/{id}/reset      discard the session and create a fresh one (same language unless {"locale"} is given)
+ GET  /api/config                   provider configuration, never credentials or endpoint URLs
+ ```
+ 
+@@ -101,6 +102,17 @@
+ 
+ `plan_turn` returns every tool call the model emitted, in order. Adapters ask for at most one call per turn (`parallel_tool_calls=False`) and fall back gracefully when a gateway rejects the parameter; the boundary executes up to `MAX_TOOL_CALLS_PER_TURN = 3` calls sequentially and composes one answer (a recorded handoff wins outright; otherwise fragments join in order and the outcome is the first non-ANSWERED outcome).
+ 
++## Languages
++
++A session has one language, `vi-VN` or `en-US`, set when it is created (the REST default is English; the browser sends the caller's choice, Vietnamese by default) and kept across resets unless a new one is asked for. It decides:
++
++- **Speech:** Vosk and Piper load `VOXCARE_VOSK_MODEL_VI` / `VOXCARE_PIPER_MODEL_VI` for Vietnamese; Deepgram gets `language=vi`; ElevenLabs Flash v2.5 is multilingual (`ELEVENLABS_VOICE_ID_VI` optional). `/api/config` reports readiness per language.
++- **Answers:** every template in `session/render.py` exists in both languages with the same slots, filled from the same tool records (dates as dd/mm/yyyy and amounts as 11.500.000 VND on a Vietnamese screen). Policy clauses carry a Vietnamese translation (`content_vi`) whose numbers and units match the English clause, which remains the retrieval source.
++- **Voice rendering:** Vietnamese spoken text spells every number in words ("mười một triệu năm trăm nghìn đồng"), dates as "ngày mười lăm tháng mười năm …", units (km, kg, m, %), hotlines digit by digit and `ORD-1002` as "ô rờ đê một không không hai".
++- **Spoken codes:** the normalizer also reads Vietnamese digits and prefixes ("đơn hàng một không không hai", "ô rờ đê …").
++
++The conversation model and the turn judge are shared: their prompts say callers speak Vietnamese or English, and tool arguments stay canonical (an English `query` for policy retrieval, because retrieval is lexical over the English clauses).
++
+ ## Data and honesty boundaries
+ 
+ - Seven read-only tools: `lookup_order_details`, `track_shipment_status`, `retrieve_policy_clauses`, `search_catalog`, `compare_products`, `apply_voucher`, `escalate_to_human`. Unknown tools are rejected; write tools do not exist.
+--- a/docs/FRONTEND.md
++++ b/docs/FRONTEND.md
+@@ -17,9 +17,14 @@
+ | `mic-capture-node.js` | AudioWorklet capture with ScriptProcessor fallback, friendly microphone errors, granted-constraint logging |
+ | `pcm-worklet.js` | AudioWorklet processor: forwards raw Float32 frames to the main thread |
+ | `ws-client.js` | Close-code labels, auto-reconnect predicate, bounded backoff, socket lifecycle |
++| `i18n.js` | Caller-facing strings in Vietnamese and English, the remembered language (storage failures fall back to Vietnamese), per-language provider view, policy text in the session language, session create/reset body |
+ 
+ `tests/test_protocol_contract.py` parses `HANDLER_OWNER` out of `voice-protocol.js` and checks it against `src/voxcare/voice/protocol.py` in both directions: a new server message type fails the test until the client records a decision (`reducer` = handled in `reduceMessage`, `app` = streaming glue in `app.js`).
+ 
++## Language
++
++The header's language picker (Tiếng Việt by default, remembered per browser) decides the session language. Every session create or reset sends `{"locale": ...}`; changing the language resets the session, so the old one is fenced and the new one uses that language's speech models and answers. The mic button reflects the chosen language's ASR/TTS readiness from `/api/config` `languages`. Caller-facing text (intro, mic labels, placeholders, policy evidence) follows the language; the diagnostic panels (trace, tuning, provider details) stay in English.
++
+ ## Capture
+ 
+ Capture requests `echoCancellation`, `noiseSuppression`, and `autoGainControl` (mono) and logs which constraints the browser granted. AudioWorklet frames (128 samples at the device rate) go through one streaming resampler per capture session — filter state and read position carry across frames, so no sample is dropped at frame boundaries — and are sent as fixed 20 ms (640-byte) binary frames. The anti-alias filter matters for recognition: the earlier single-pole filter let 9–18 kHz content through at only 4–7 dB down, folded into 2–7 kHz; on Piper speech with added hiss above 9 kHz, Vosk word errors went from 6 % to 9–11 % with it and stayed at 6 % with the FIR. The filter costs under 1 % of one core. Microphone failures show friendly messages (denied / no device / busy) and never leave the UI parked in "Listening".
+--- a/docs/TESTING.md
++++ b/docs/TESTING.md
+@@ -18,6 +18,7 @@
+ | `tests/test_session_boundary.py`, `tests/test_catalog_tools.py`, `tests/test_policy*.py`, `tests/test_seed_fixtures.py` | tool registry, customer scoping, grounded rendering, fixtures, policy retrieval |
+ | `tests/test_voice_recovery_protocol.py`, `tests/test_voice_barge_in.py` | the real WebSocket flow with fake ASR/TTS/LLM/judges: recovery, re-judging, barge-in, close codes, deadline watcher |
+ | `tests/test_protocol_contract.py` | server ↔ client message-name contract |
++| `tests/test_bilingual.py`, `tests/frontend/i18n.test.mjs` | session languages over REST and WebSocket, Vietnamese answers and their spoken form, number words, translated policy clauses (numbers checked against English), Vietnamese spoken codes, per-language providers, the language picker helpers |
+ | `tests/test_voice_rendering.py` | voice rendering for TTS (short policy, dates, VND, codes) and spoken order-code normalization, incl. one WebSocket turn |
+ | `tests/test_*adapters.py`, `tests/test_provider_cascade.py`, `tests/test_jev.py`, `tests/test_openrouter_judge.py` | provider adapters and fallback, with fakes only |
+ | `tests/test_config.py`, `tests/test_http_api.py`, `tests/test_privacy.py` | configuration validation, REST surface, PII mask |
+@@ -30,6 +31,7 @@
+ ```sh
+ uv run --group demo python scripts/offline_voice_e2e.py               # plain, hesitation, echo
+ uv run --group demo python scripts/offline_voice_e2e.py plain,echo
++uv run --group demo python scripts/offline_voice_e2e.py --lang vi      # Vietnamese voices, utterances and sessions
+ ```
+ 
+ Runs the `live_voice_e2e.py` scenarios with real Piper, Vosk, turn control, tools and rendering, but replaces the two network dependencies: a keyword planner stands in for the conversation model and the application baseline for the turn judge. It shows that the voice loop works end to end on a machine with only the demo models; it says nothing about the real model's tool choices. The semantic barge-in scenarios need a real judge and are not in the default list.
+@@ -41,6 +43,7 @@
+ ```sh
+ uv run python scripts/live_voice_e2e.py                     # all scenarios
+ uv run python scripts/live_voice_e2e.py --scenarios plain,echo
++uv run python scripts/live_voice_e2e.py --lang vi                    # the same five scenarios in Vietnamese
+ uv run python scripts/live_mercury_check.py                 # OpenRouter judge on the controlled cases + one WebSocket turn
+ ```
+ 
+--- a/docs/VOICE_PROTOCOL.md
++++ b/docs/VOICE_PROTOCOL.md
+@@ -25,8 +25,8 @@
+ 
+ | `type` | fields | meaning |
+ |---|---|---|
+-| `session` | `session` (SessionView), `providers` (`/api/config` shape), `protocol: 2`, `barge_in` (`"off"`\|`"semantic"`) | hello after connect + accept; the client adopts the barge-in mode from it. |
+-| `voice_started` | `provider`, `locale: "en-US"` | ASR attached; client may stream audio. |
++| `session` | `session` (SessionView, including `locale`), `providers` (`/api/config` shape, speech providers for the session's language), `protocol: 2`, `barge_in` (`"off"`\|`"semantic"`) | hello after connect + accept; the client adopts the barge-in mode from it. |
++| `voice_started` | `provider`, `locale` (`"vi-VN"`\|`"en-US"`, the session's language) | ASR attached in the session's language; client may stream audio. |
+ | `transcript_partial` | `session_id`, `turn_id`, `transcript_version`, `sequence`, `text`, `is_final`, `speech_final` | ASR interim or non-endpointed text. |
+ | `transcript_final` | same as partial | endpointed text (`speech_final=true`). |
+ | `turn_control` | `session_id`, `turn_id`, `turn_epoch`, `transcript_version`, `decision_request_id`, `hold_episode_id`, `state` (`COMMIT`\|`HOLD`\|`DEGRADED`\|`FALLBACK_RESOLVED`), `reason`, `jeval_noncommit_count`, `hold_elapsed_ms`, `hold_deadline_ms` (null until the deadline arms), `turn_mode`, `scores` (`turn_complete`, `holding_floor`, `addressed_to_agent`, `taking_floor` or null), `should_interrupt`, `timing` (T0–T6, see §4) | turn verdict for one transcript version. |
+--- a/scripts/fetch_demo_models.py
++++ b/scripts/fetch_demo_models.py
+@@ -1,16 +1,18 @@
+-"""Download the offline demo models (Vosk ASR + Piper voice) into models/.
++"""Download the offline demo models (Vosk ASR + Piper voices) into models/.
+ 
+ Demo-stack deviation from design section 2.1; the files are git-ignored and
+ this script is the only supported way to fetch them.
+ 
+-Usage: uv run --group demo python scripts/fetch_demo_models.py [--vosk small|lgraph|large]
++Usage: uv run --group demo python scripts/fetch_demo_models.py [--lang en|vi|all] [--vosk small|lgraph|large]
+ 
+-Vosk English models (word error rates as published by the Vosk project,
++English Vosk models (word error rates as published by the Vosk project,
+ LibriSpeech test-clean / TED-LIUM):
+   small   vosk-model-small-en-us-0.15   ~40 MB   9.85 / 10.38  (default)
+   lgraph  vosk-model-en-us-0.22-lgraph  ~128 MB  7.82 / 8.20
+   large   vosk-model-en-us-0.22         ~1.8 GB  5.69 / 6.05   (needs several GB of RAM)
+-Point VOXCARE_VOSK_MODEL at the directory the script prints.
++Vietnamese (--lang vi): vosk-model-vn-0.4 (~78 MB, 15.70 WER on Vivos) and the
++Piper voice vi_VN-vais1000-medium (~63 MB).
++The script prints the .env lines that point at what it downloaded.
+ """
+ 
+ from __future__ import annotations
+@@ -29,9 +31,16 @@
+     "lgraph": "vosk-model-en-us-0.22-lgraph",
+     "large": "vosk-model-en-us-0.22",
+ }
+-PIPER_VOICE_BASE = (
+-    "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium"
+-)
++VOSK_MODEL_VI = "vosk-model-vn-0.4"
++PIPER_VOICES = {
++    # name -> base URL without suffix (revision pinned where the voice exists at it)
++    "en_US-lessac-medium": (
++        "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium"
++    ),
++    "vi_VN-vais1000-medium": (
++        "https://huggingface.co/rhasspy/piper-voices/resolve/main/vi/vi_VN/vais1000/medium/vi_VN-vais1000-medium"
++    ),
++}
+ PIPER_FILES = (".onnx", ".onnx.json")
+ 
+ 
+@@ -45,8 +54,7 @@
+             handle.write(block)
+ 
+ 
+-def fetch_vosk(variant: str = "small") -> None:
+-    dirname = VOSK_MODELS[variant]
++def fetch_vosk(dirname: str) -> str:
+     target_dir = MODELS_DIR / dirname
+     if (target_dir / "final.mdl").exists() or (target_dir / "am" / "final.mdl").exists():
+         print(f"vosk model already present: {target_dir}")
+@@ -57,31 +65,40 @@
+             bundle.extractall(MODELS_DIR)
+         archive.unlink()
+         print(f"vosk model ready: {target_dir}")
+-    print(f"set in .env: VOXCARE_VOSK_MODEL=models/{dirname}")
++    return f"models/{dirname}"
+ 
+ 
+-def fetch_piper_voice() -> None:
++def fetch_piper_voice(name: str) -> str:
+     for suffix in PIPER_FILES:
+-        target = MODELS_DIR / f"en_US-lessac-medium{suffix}"
++        target = MODELS_DIR / f"{name}{suffix}"
+         if target.exists():
+             print(f"piper voice file already present: {target}")
+             continue
+-        _fetch(f"{PIPER_VOICE_BASE}{suffix}", target)
+-    print("piper voice ready")
++        _fetch(f"{PIPER_VOICES[name]}{suffix}", target)
++    print(f"piper voice ready: {name}")
++    return f"models/{name}.onnx"
+ 
+ 
+ def main() -> int:
+     parser = argparse.ArgumentParser(description="Download the offline demo models into models/.")
+-    parser.add_argument("--vosk", choices=sorted(VOSK_MODELS), default="small", help="Vosk English model size")
++    parser.add_argument("--lang", choices=("en", "vi", "all"), default="en", help="languages to download")
++    parser.add_argument("--vosk", choices=sorted(VOSK_MODELS), default="small", help="English Vosk model size")
+     args = parser.parse_args()
+     MODELS_DIR.mkdir(exist_ok=True)
++    env_lines: list[str] = []
+     try:
+-        fetch_vosk(args.vosk)
+-        fetch_piper_voice()
++        if args.lang in {"en", "all"}:
++            env_lines.append(f"VOXCARE_VOSK_MODEL={fetch_vosk(VOSK_MODELS[args.vosk])}")
++            env_lines.append(f"VOXCARE_PIPER_MODEL={fetch_piper_voice('en_US-lessac-medium')}")
++        if args.lang in {"vi", "all"}:
++            env_lines.append(f"VOXCARE_VOSK_MODEL_VI={fetch_vosk(VOSK_MODEL_VI)}")
++            env_lines.append(f"VOXCARE_PIPER_MODEL_VI={fetch_piper_voice('vi_VN-vais1000-medium')}")
+     except Exception as exc:
+         print(f"failed to fetch demo models: {type(exc).__name__}: {exc}", file=sys.stderr)
+         return 1
+-    print("done")
++    print("done; set in .env:")
++    for line in env_lines:
++        print(f"  {line}")
+     return 0
+ 
+ 
+--- a/scripts/live_voice_e2e.py
++++ b/scripts/live_voice_e2e.py
+@@ -37,16 +37,31 @@
+ STEP_TIMEOUT_S = 60
+ MAX_JUDGE_CALLS = 40
+ 
+-UTTERANCES = {
++UTTERANCES_BY_LOCALE = {
+     # NOTE: the small Vosk model hears a spelled order code ("O R D 1 0 0 2")
+     # as words, so the spoken-answer scenario uses a policy question the ASR
+     # hears reliably; order-code lookup is covered by the typed campaign.
+-    "plain": "What is the return window for my TV?",
+-    "hesitation_part1": "Let me think.",
+-    "hesitation_part2": "What is the return window for my TV?",
+-    "backchannel": "Uh-huh.",
+-    "floor_grab": "Stop! I need to change my order right now.",
++    "en-US": {
++        "plain": "What is the return window for my TV?",
++        "hesitation_part1": "Let me think.",
++        "hesitation_part2": "What is the return window for my TV?",
++        "backchannel": "Uh-huh.",
++        "floor_grab": "Stop! I need to change my order right now.",
++    },
++    "vi-VN": {
++        "plain": "Chính sách đổi trả tivi như thế nào?",
++        "hesitation_part1": "Để tôi nghĩ đã.",
++        "hesitation_part2": "Chính sách đổi trả tivi như thế nào?",
++        "backchannel": "Ừ.",
++        "floor_grab": "Khoan đã! Tôi cần đổi đơn hàng ngay bây giờ.",
++    },
+ }
++LOCALE = "en-US"  # --lang vi switches the sessions, the voices and the utterances to Vietnamese
++UTTERANCES = UTTERANCES_BY_LOCALE[LOCALE]
++
++
++def new_session(client) -> dict:
++    return client.post("/api/sessions", json={"locale": LOCALE}).json()
+ 
+ 
+ async def synth_16k(tts, text: str) -> bytes:
+@@ -210,7 +225,7 @@
+ 
+ def scenario_plain(harness: Harness, client, tts, clock: list[float]) -> bytes:
+     print("== Scenario 1: plain order question ==", flush=True)
+-    session = client.post("/api/sessions").json()
++    session = new_session(client)
+     sid = session["session_id"]
+     with client.websocket_connect(f"/ws/sessions/{sid}") as socket:
+         assert socket.receive_json()["type"] == "session"
+@@ -278,7 +293,7 @@
+ 
+ def scenario_hesitation(harness: Harness, client, tts, clock: list[float]) -> None:
+     print("== Scenario 2: hesitation then continuation ==", flush=True)
+-    session = client.post("/api/sessions").json()
++    session = new_session(client)
+     with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+         assert socket.receive_json()["type"] == "session"
+         socket.send_json({"type": "start", "sample_rate": 16_000, "channels": 1, "encoding": "pcm_s16le"})
+@@ -324,7 +339,7 @@
+     if not assistant_audio:
+         harness.record("echo.no_new_turn", False, "no assistant audio captured in scenario 1")
+         return
+-    session = client.post("/api/sessions").json()
++    session = new_session(client)
+     with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+         assert socket.receive_json()["type"] == "session"
+         socket.send_json({"type": "start", "sample_rate": 16_000, "channels": 1, "encoding": "pcm_s16le"})
+@@ -384,7 +399,7 @@
+ def scenario_backchannel(harness: Harness, client, tts, clock: list[float]) -> None:
+     print("== Scenario 4: backchannel during assistant speech (VOXCARE_BARGE_IN=semantic) ==", flush=True)
+     os.environ["VOXCARE_BARGE_IN"] = "semantic"
+-    session = client.post("/api/sessions").json()
++    session = new_session(client)
+     with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+         assert socket.receive_json()["type"] == "session"
+         socket.send_json({"type": "start", "sample_rate": 16_000, "channels": 1, "encoding": "pcm_s16le"})
+@@ -509,7 +524,7 @@
+ def scenario_interruption(harness: Harness, client, tts, clock: list[float]) -> None:
+     print("== Scenario 5: floor grab during assistant speech (VOXCARE_BARGE_IN=semantic) ==", flush=True)
+     os.environ["VOXCARE_BARGE_IN"] = "semantic"
+-    session = client.post("/api/sessions").json()
++    session = new_session(client)
+     with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+         assert socket.receive_json()["type"] == "session"
+         socket.send_json({"type": "start", "sample_rate": 16_000, "channels": 1, "encoding": "pcm_s16le"})
+@@ -576,7 +591,11 @@
+     faulthandler.dump_traceback_later(TOTAL_TIMEOUT_S, exit=True)
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument("--scenarios", default="plain,hesitation,echo,backchannel,interruption")
++    parser.add_argument("--lang", choices=("en", "vi"), default="en", help="session language and utterances")
+     args = parser.parse_args()
++    global LOCALE, UTTERANCES
++    LOCALE = "vi-VN" if args.lang == "vi" else "en-US"
++    UTTERANCES = UTTERANCES_BY_LOCALE[LOCALE]
+     wanted = {name.strip() for name in args.scenarios.split(",")}
+ 
+     from dotenv import load_dotenv
+@@ -592,13 +611,14 @@
+         llm = f"openai-{settings.openai_transport}/{settings.openai_model}"
+     judge = settings.judge_model(mode) if mode in {"jev", "openrouter"} else "baseline"
+     print(
+-        f"turn_mode={mode} asr={settings.asr_provider} tts={settings.tts_provider} llm={llm} judge={judge}",
++        f"lang={LOCALE} turn_mode={mode} asr={settings.asr_provider} tts={settings.tts_provider} llm={llm} "
++        f"judge={judge}",
+         flush=True,
+     )
+ 
+     from voxcare.providers import tts_from_env
+ 
+-    tts = tts_from_env()
++    tts = tts_from_env(LOCALE)
+     from fastapi.testclient import TestClient
+ 
+     import voxcare.app as api
+--- a/scripts/offline_voice_e2e.py
++++ b/scripts/offline_voice_e2e.py
+@@ -6,16 +6,18 @@
+ flow (WebSocket protocol, ASR fan-in, turn control, session boundary, grounded
+ rendering, voice rendering, TTS streaming).
+ 
+-    uv run --group demo python scripts/fetch_demo_models.py   # once
+-    uv run --group demo python scripts/offline_voice_e2e.py
++    uv run --group demo python scripts/fetch_demo_models.py --lang all   # once
++    uv run --group demo python scripts/offline_voice_e2e.py              # English
++    uv run --group demo python scripts/offline_voice_e2e.py --lang vi    # Vietnamese
+ 
+-Needs VOXCARE_VOSK_MODEL / VOXCARE_PIPER_MODEL (from .env or the defaults
+-under models/). Semantic barge-in scenarios need a real judge, so they are
++Needs VOXCARE_VOSK_MODEL / VOXCARE_PIPER_MODEL (or the _VI variants for
++--lang vi) from .env, or the defaults under models/. Semantic barge-in scenarios need a real judge, so they are
+ not in the default list. Exit 0 only when every scenario passes.
+ """
+ 
+ from __future__ import annotations
+ 
++import argparse
+ import os
+ import re
+ import runpy
+@@ -40,8 +42,13 @@
+                 PlannedToolCall("lookup_order_details", {"order_code": order_code}, "k1"),
+                 PlannedToolCall("track_shipment_status", {"order_code": order_code}, "k2"),
+             ]
+-        for word, category in (("return", "RETURNS"), ("warranty", "WARRANTY"), ("deliver", "SHIPPING")):
+-            if word in text:
++        topics = (
++            (("return", "đổi trả", "trả hàng"), "RETURNS"),
++            (("warranty", "bảo hành"), "WARRANTY"),
++            (("deliver", "giao hàng"), "SHIPPING"),
++        )
++        for words, category in topics:
++            if any(word in text for word in words):
+                 arguments = {"query": user_text, "category": category, "product_category": "TV_AV", "brand": None}
+                 return [PlannedToolCall("retrieve_policy_clauses", arguments, "k1")]
+         return []
+@@ -54,13 +61,19 @@
+     os.environ["VOXCARE_TTS_PROVIDER"] = "piper"
+     os.environ.setdefault("VOXCARE_VOSK_MODEL", str(APP_ROOT / "models" / "vosk-model-small-en-us-0.15"))
+     os.environ.setdefault("VOXCARE_PIPER_MODEL", str(APP_ROOT / "models" / "en_US-lessac-medium.onnx"))
++    os.environ.setdefault("VOXCARE_VOSK_MODEL_VI", str(APP_ROOT / "models" / "vosk-model-vn-0.4"))
++    os.environ.setdefault("VOXCARE_PIPER_MODEL_VI", str(APP_ROOT / "models" / "vi_VN-vais1000-medium.onnx"))
+     sys.path.insert(0, str(APP_ROOT / "src"))
+ 
+     import voxcare.app as api
+ 
+     api.boundary.dialogue_factory = KeywordPlanner
+-    scenarios = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_SCENARIOS
+-    sys.argv = ["live_voice_e2e.py", "--scenarios", scenarios]
++    print("offline check: the conversation model below is replaced by a keyword planner (no network)", flush=True)
++    parser = argparse.ArgumentParser(description="Offline voice end-to-end check (no keys, no network).")
++    parser.add_argument("scenarios", nargs="?", default=DEFAULT_SCENARIOS)
++    parser.add_argument("--lang", choices=("en", "vi"), default="en")
++    args = parser.parse_args()
++    sys.argv = ["live_voice_e2e.py", "--scenarios", args.scenarios, "--lang", args.lang]
+     try:
+         runpy.run_path(str(APP_ROOT / "scripts" / "live_voice_e2e.py"), run_name="__main__")
+     except SystemExit as exc:
+--- a/src/voxcare/__init__.py
++++ b/src/voxcare/__init__.py
+@@ -1,3 +1,3 @@
+-"""VoxCare AI — English browser voice-support prototype for the fictional retailer VoxCom."""
++"""VoxCare AI — Vietnamese and English browser voice-support prototype for the fictional retailer VoxCom."""
+ 
+ __version__ = "0.1.0"
+--- a/src/voxcare/config.py
++++ b/src/voxcare/config.py
+@@ -129,6 +129,8 @@
+     elevenlabs_model: str = "eleven_flash_v2_5"
+     vosk_model: str | None = None
+     piper_model: str | None = None
++    vosk_model_vi: str | None = None
++    piper_model_vi: str | None = None
+     jev_model: str | None = None
+ 
+     def judge_model(self, mode: str) -> str:
+@@ -214,6 +216,8 @@
+         or defaults.elevenlabs_model,
+         vosk_model=_parse_text(get("VOXCARE_VOSK_MODEL")),
+         piper_model=_parse_text(get("VOXCARE_PIPER_MODEL")),
++        vosk_model_vi=_parse_text(get("VOXCARE_VOSK_MODEL_VI")),
++        piper_model_vi=_parse_text(get("VOXCARE_PIPER_MODEL_VI")),
+         jev_model=_parse_text(get("VOXCARE_JEV_MODEL")),
+     )
+ 
+--- a/src/voxcare/domain/data/policies.json
++++ b/src/voxcare/domain/data/policies.json
+@@ -1,11 +1,11 @@
+ {
+   "corpus_id": "VOXCOM-DEMO-POLICY-V1",
+   "corpus_version": "1.0-demo",
+-  "language": "en",
++  "language": "en, vi",
+   "market": "VN",
+   "channel": "VOICE_CSKH",
+   "is_fictional": true,
+-  "notice": "Fictional prototype demo business terms authored for the VoxCare prototype. These are not real VoxCom business terms, manufacturer warranty terms, legal advice, statutory consumer rights, or a guarantee. Every clause carries its mandatory [Fictional VoxCom Demo Policy v1.0] header and is_fictional=true. Clause texts are transcribed verbatim from spec 42 §8.2 (02_research/42_voxcare_p1_detailed_design.md); the source_reference of each clause names that section. LaTeX markup of the spec source is rendered as plain text without changing terms.",
++  "notice": "Fictional prototype demo business terms authored for the VoxCare prototype. These are not real VoxCom business terms, manufacturer warranty terms, legal advice, statutory consumer rights, or a guarantee. Every clause carries its mandatory [Fictional VoxCom Demo Policy v1.0] header and is_fictional=true. Clause texts are transcribed verbatim from spec 42 §8.2 (02_research/42_voxcare_p1_detailed_design.md); the source_reference of each clause names that section. LaTeX markup of the spec source is rendered as plain text without changing terms. Vietnamese texts (title_vi, content_vi) are translations made for the bilingual demo; every number, unit and clause id matches the English clause, and the English text remains the retrieval source.",
+   "scope_note": "Full 9-clause demo corpus per spec 42 §8.2: 2 SHIPPING, 2 INSTALLATION, 3 WARRANTY, 2 RETURNS. Retrieval is deterministic lexical overlap (see policy.py); the prototype labels this a demo simplification of the spec §8.2 vector design (top_k=3, threshold 0.70). Stored categories never include ALL.",
+   "clauses": [
+     {
+@@ -13,8 +13,10 @@
+       "clause_ref": "Clause 1.1",
+       "category": "SHIPPING",
+       "title": "Standard Delivery Radius & Tiered Distance Surcharge",
++      "title_vi": "Phạm vi giao hàng tiêu chuẩn & phụ phí theo khoảng cách",
+       "header": "[Fictional VoxCom Demo Policy v1.0, Market: VN, Language: EN, Channel: Voice CSKH, Scope: Consumer Electronics]",
+       "content_en": "Complimentary standard ground delivery is provided for customer purchase orders with a cart subtotal exceeding 500,000 VND within a 10 km radial distance from the nearest VoxCom fulfillment hub. For delivery destinations situated between 10 km and 30 km from the hub, a distance logistics surcharge of 10,000 VND/km applies for standard appliances. Deliveries exceeding 30 km require regional freight quotation.",
++      "content_vi": "Miễn phí giao hàng tiêu chuẩn cho đơn hàng có tổng giá trị giỏ hàng trên 500.000 VND trong bán kính 10 km tính từ kho xử lý đơn hàng VoxCom gần nhất. Với địa chỉ giao hàng cách kho từ 10 km đến 30 km, áp dụng phụ phí vận chuyển 10.000 VND/km đối với thiết bị tiêu chuẩn. Địa chỉ giao hàng xa hơn 30 km cần báo giá vận chuyển theo khu vực.",
+       "source_reference": "02_research/42_voxcare_p1_detailed_design.md §8.2.1",
+       "applicability_rules": {
+         "market": "VN",
+@@ -33,13 +35,19 @@
+       "clause_ref": "Clause 1.2",
+       "category": "SHIPPING",
+       "title": "Bulky Appliance Logistics, Manual Stair Carry & COD Limits",
++      "title_vi": "Giao hàng cồng kềnh, phí khuân vác thang bộ & hạn mức COD",
+       "header": "[Fictional VoxCom Demo Policy v1.0, Market: VN, Language: EN, Channel: Voice CSKH, Scope: Consumer Electronics]",
+       "content_en": "Major bulky appliances (refrigerators over 300L, washing machines over 9kg, and television displays over 55 inches) are dispatched with dedicated 2-person delivery handling. In residential premises lacking functional freight elevator access, manual stair carriage incurs an auxiliary handling fee of 50,000 VND/floor commencing from the second floor. Cash on Delivery (COD) payment is authorized up to a ceiling of 20,000,000 VND per order. Exterior carton unboxing inspection for cosmetic transit damage is permitted prior to payment collection.",
++      "content_vi": "Các thiết bị cồng kềnh (tủ lạnh trên 300L, máy giặt trên 9kg và TV trên 55 inch) được giao bởi đội 2 người chuyên trách. Tại nhà ở không có thang máy chở hàng hoạt động, việc khuân vác bằng thang bộ tính phụ phí 50.000 VND/tầng, bắt đầu từ tầng hai. Thanh toán khi nhận hàng (COD) được chấp nhận tối đa 20.000.000 VND mỗi đơn hàng. Khách hàng được mở thùng carton bên ngoài để kiểm tra hư hỏng ngoại quan do vận chuyển trước khi thanh toán.",
+       "source_reference": "02_research/42_voxcare_p1_detailed_design.md §8.2.1",
+       "applicability_rules": {
+         "market": "VN",
+         "channel": "VOICE_CSKH",
+-        "product_categories": ["REFRIGERATOR", "WASHING_MACHINE", "TV_AV"],
++        "product_categories": [
++          "REFRIGERATOR",
++          "WASHING_MACHINE",
++          "TV_AV"
++        ],
+         "brands": "ALL",
+         "conditions": "bulky product thresholds and logistics terms in clause",
+         "version_active": "1.0-demo"
+@@ -53,13 +61,19 @@
+       "clause_ref": "Clause 2.1",
+       "category": "INSTALLATION",
+       "title": "Complimentary Standard Installation Scope",
++      "title_vi": "Phạm vi lắp đặt tiêu chuẩn miễn phí",
+       "header": "[Fictional VoxCom Demo Policy v1.0, Market: VN, Language: EN, Channel: Voice CSKH, Scope: Consumer Electronics]",
+       "content_en": "Standard complimentary installation service covers table-top pedestal assembly for television displays, factory water inlet and drainage hose connections for washing machines, and level positioning with initial electrical power-on test for refrigerators.",
++      "content_vi": "Dịch vụ lắp đặt tiêu chuẩn miễn phí bao gồm lắp chân đế để bàn cho TV, đấu nối ống cấp nước và ống thoát nước theo nhà sản xuất cho máy giặt, cân chỉnh vị trí và cấp nguồn chạy thử lần đầu cho tủ lạnh.",
+       "source_reference": "02_research/42_voxcare_p1_detailed_design.md §8.2.2",
+       "applicability_rules": {
+         "market": "VN",
+         "channel": "VOICE_CSKH",
+-        "product_categories": ["TV_AV", "WASHING_MACHINE", "REFRIGERATOR"],
++        "product_categories": [
++          "TV_AV",
++          "WASHING_MACHINE",
++          "REFRIGERATOR"
++        ],
+         "brands": "ALL",
+         "conditions": "standard installation tasks in clause",
+         "version_active": "1.0-demo"
+@@ -73,13 +87,18 @@
+       "clause_ref": "Clause 2.2",
+       "category": "INSTALLATION",
+       "title": "Wall Mounting, Masonry Drilling & Auxiliary Material Pricing",
++      "title_vi": "Treo tường, khoan tường & giá vật tư phụ",
+       "header": "[Fictional VoxCom Demo Policy v1.0, Market: VN, Language: EN, Channel: Voice CSKH, Scope: Consumer Electronics]",
+       "content_en": "Structural masonry drilling, specialized wall-mount brackets, and air-conditioning copper piping exceeding the factory-bundled 3m length are billed strictly according to VoxCom's published auxiliary materials price schedule. Service technicians are mandated to provide an itemized printed or digital quotation and obtain oral or signed customer confirmation prior to commencing drilling or installation.",
++      "content_vi": "Việc khoan tường gạch hoặc bê tông, giá treo tường chuyên dụng và ống đồng máy lạnh dài hơn 3m đi kèm theo máy được tính phí đúng theo bảng giá vật tư phụ do VoxCom công bố. Kỹ thuật viên bắt buộc phải đưa báo giá chi tiết dạng in hoặc điện tử và có xác nhận bằng lời hoặc chữ ký của khách hàng trước khi khoan hoặc lắp đặt.",
+       "source_reference": "02_research/42_voxcare_p1_detailed_design.md §8.2.2",
+       "applicability_rules": {
+         "market": "VN",
+         "channel": "VOICE_CSKH",
+-        "product_categories": ["TV_AV", "AIR_CONDITIONER"],
++        "product_categories": [
++          "TV_AV",
++          "AIR_CONDITIONER"
++        ],
+         "brands": "ALL",
+         "conditions": "wall mounting and auxiliary material terms in clause",
+         "version_active": "1.0-demo"
+@@ -93,14 +112,18 @@
+       "clause_ref": "Clause 3.1",
+       "category": "WARRANTY",
+       "title": "Samsung Brand Warranty & Purchase Date Inverter Tiering",
++      "title_vi": "Bảo hành Samsung & phân tầng bảo hành Inverter theo ngày mua",
+       "header": "[Fictional VoxCom Demo Policy v1.0, Market: VN, Language: EN, Channel: Voice CSKH, Scope: Consumer Electronics]",
+       "content_en": "Samsung consumer electronics feature a 24-month comprehensive manufacturer warranty from the official date of purchase. For Digital Inverter components (refrigerator compressors and washing machine motors), warranty duration is tiered by purchase date in alignment with official manufacturer terms: (1) Products purchased between 01/11/2022 and 31/03/2026: 20-year warranty on Digital Inverter compressor/motor. (2) Products purchased from 01/04/2026 onward: 10-year warranty on Digital Inverter compressor/motor. In-home certified technician dispatch is provided for television displays 43 inches and above and all major domestic appliances. Warranty strictly excludes physical display panel impact cracks, liquid or moisture ingress, lightning surges, and unauthorized chassis disassembly.",
++      "content_vi": "Thiết bị điện tử tiêu dùng Samsung được bảo hành toàn diện 24 tháng của nhà sản xuất kể từ ngày mua chính thức. Với linh kiện Digital Inverter (máy nén tủ lạnh và động cơ máy giặt), thời hạn bảo hành được phân tầng theo ngày mua, phù hợp với điều khoản chính thức của nhà sản xuất: (1) Sản phẩm mua từ 01/11/2022 đến 31/03/2026: bảo hành 20 năm cho máy nén/động cơ Digital Inverter. (2) Sản phẩm mua từ 01/04/2026 trở đi: bảo hành 10 năm cho máy nén/động cơ Digital Inverter. Kỹ thuật viên được cử đến tận nhà đối với TV từ 43 inch trở lên và mọi thiết bị gia dụng lớn. Bảo hành không áp dụng cho nứt vỡ tấm nền màn hình do va đập, vào nước hoặc ẩm, sét đánh hoặc quá áp, và tự ý tháo vỏ máy.",
+       "source_reference": "02_research/42_voxcare_p1_detailed_design.md §8.2.3",
+       "applicability_rules": {
+         "market": "VN",
+         "channel": "VOICE_CSKH",
+         "product_categories": "ALL",
+-        "brands": ["Samsung"],
++        "brands": [
++          "Samsung"
++        ],
+         "conditions": "purchase date, inverter tier and exclusions in clause",
+         "version_active": "1.0-demo"
+       },
+@@ -113,14 +136,18 @@
+       "clause_ref": "Clause 3.2",
+       "category": "WARRANTY",
+       "title": "LG Brand Warranty & Inverter Direct Drive Protection",
++      "title_vi": "Bảo hành LG & bảo vệ động cơ Inverter Direct Drive",
+       "header": "[Fictional VoxCom Demo Policy v1.0, Market: VN, Language: EN, Channel: Voice CSKH, Scope: Consumer Electronics]",
+       "content_en": "LG consumer electronics carry a 24-month comprehensive parts and labor warranty. Inverter Direct Drive washing machine motors and Smart Inverter refrigerator compressors carry a 10-year extended component warranty. In-home warranty inspection is complimentary within metropolitan municipal boundaries for major appliances.",
++      "content_vi": "Thiết bị điện tử tiêu dùng LG được bảo hành toàn diện 24 tháng cho linh kiện và công sửa chữa. Động cơ máy giặt Inverter Direct Drive và máy nén tủ lạnh Smart Inverter được bảo hành mở rộng 10 năm. Kiểm tra bảo hành tại nhà được miễn phí trong phạm vi nội thành đối với thiết bị gia dụng lớn.",
+       "source_reference": "02_research/42_voxcare_p1_detailed_design.md §8.2.3",
+       "applicability_rules": {
+         "market": "VN",
+         "channel": "VOICE_CSKH",
+         "product_categories": "ALL",
+-        "brands": ["LG"],
++        "brands": [
++          "LG"
++        ],
+         "conditions": "warranty coverage and exclusions in clause",
+         "version_active": "1.0-demo"
+       },
+@@ -133,14 +160,18 @@
+       "clause_ref": "Clause 3.3",
+       "category": "WARRANTY",
+       "title": "Panasonic Brand Warranty & Component Terms",
++      "title_vi": "Bảo hành Panasonic & điều khoản linh kiện",
+       "header": "[Fictional VoxCom Demo Policy v1.0, Market: VN, Language: EN, Channel: Voice CSKH, Scope: Consumer Electronics]",
+       "content_en": "Panasonic domestic appliances feature 24 months of standard warranty coverage in Vietnam (12 months for select television and portable audio models). Panasonic Inverter refrigerator compressors are warranted for 12 years; washing machine motors are warranted for 10 years. Official service dispatch is arranged via authorized service centers or customer hotline 1800 1593.",
++      "content_vi": "Thiết bị gia dụng Panasonic được bảo hành tiêu chuẩn 24 tháng tại Việt Nam (12 tháng với một số mẫu TV và thiết bị âm thanh di động). Máy nén tủ lạnh Inverter của Panasonic được bảo hành 12 năm; động cơ máy giặt được bảo hành 10 năm. Dịch vụ bảo hành chính hãng được sắp xếp qua trung tâm bảo hành ủy quyền hoặc tổng đài khách hàng 1800 1593.",
+       "source_reference": "02_research/42_voxcare_p1_detailed_design.md §8.2.3",
+       "applicability_rules": {
+         "market": "VN",
+         "channel": "VOICE_CSKH",
+         "product_categories": "ALL",
+-        "brands": ["Panasonic"],
++        "brands": [
++          "Panasonic"
++        ],
+         "conditions": "model-specific warranty terms in clause",
+         "version_active": "1.0-demo"
+       },
+@@ -153,8 +184,10 @@
+       "clause_ref": "Clause 4.1",
+       "category": "RETURNS",
+       "title": "30-Day 1-for-1 Defective Replacement Window",
++      "title_vi": "Đổi mới 1 đổi 1 trong 30 ngày cho sản phẩm lỗi",
+       "header": "[Fictional VoxCom Demo Policy v1.0, Market: VN, Language: EN, Channel: Voice CSKH, Scope: Consumer Electronics]",
+       "content_en": "Retail customers are entitled to a 1-for-1 identical product replacement within 30 calendar days from the validated date of delivery if the product exhibits functional manufacturing defects certified by a VoxCom or authorized brand technician. The item must be accompanied by the original manufacturer packaging carton, protective styrofoam, bundled accessories, and matching serial number.",
++      "content_vi": "Khách hàng mua lẻ được đổi 1 đổi 1 sang sản phẩm giống hệt trong vòng 30 ngày kể từ ngày giao hàng được xác nhận, nếu sản phẩm có lỗi chức năng do nhà sản xuất và được kỹ thuật viên VoxCom hoặc kỹ thuật viên ủy quyền của hãng xác nhận. Sản phẩm đổi phải kèm thùng carton gốc của nhà sản xuất, xốp bảo vệ, phụ kiện đi kèm và số serial trùng khớp.",
+       "source_reference": "02_research/42_voxcare_p1_detailed_design.md §8.2.4",
+       "applicability_rules": {
+         "market": "VN",
+@@ -173,8 +206,10 @@
+       "clause_ref": "Clause 4.2",
+       "category": "RETURNS",
+       "title": "Return Freight & Restocking Evaluation Conditions",
++      "title_vi": "Phí vận chuyển hàng trả & điều kiện đánh giá nhập kho lại",
+       "header": "[Fictional VoxCom Demo Policy v1.0, Market: VN, Language: EN, Channel: Voice CSKH, Scope: Consumer Electronics]",
+       "content_en": "If a return is initiated due to verified manufacturer defect or delivery of an incorrect SKU, VoxCom assumes 100% of reverse logistics collection costs. Return requests based on customer change-of-mind are subject to individual merchant review; unopened products in original factory seal may be accepted subject to return freight and inspection guidelines established by store management.",
++      "content_vi": "Nếu yêu cầu trả hàng xuất phát từ lỗi nhà sản xuất đã được xác minh hoặc giao sai mã sản phẩm (SKU), VoxCom chịu 100% chi phí thu hồi hàng. Yêu cầu trả hàng do khách hàng đổi ý sẽ được xem xét theo từng trường hợp; sản phẩm chưa mở, còn nguyên niêm phong nhà máy có thể được chấp nhận, kèm phí vận chuyển trả hàng và theo hướng dẫn kiểm tra do quản lý cửa hàng quy định.",
+       "source_reference": "02_research/42_voxcare_p1_detailed_design.md §8.2.4",
+       "applicability_rules": {
+         "market": "VN",
+--- a/src/voxcare/domain/policy.py
++++ b/src/voxcare/domain/policy.py
+@@ -141,6 +141,8 @@
+     clause_version: str
+     is_fictional: bool
+     match_score: float
++    title_vi: str = ""
++    content_vi: str = ""
+ 
+ 
+ @dataclass(frozen=True)
+@@ -212,6 +214,9 @@
+             raise ValueError(f"invalid fictional-corpus metadata on {clause['policy_id']}")
+         if clause["clause_version"] != corpus.get("corpus_version"):
+             raise ValueError(f"version mismatch on {clause['policy_id']}")
++        for field in ("title_vi", "content_vi"):  # optional Vietnamese translation, never empty when present
++            if field in clause and (not isinstance(clause[field], str) or not clause[field].strip()):
++                raise ValueError(f"empty {field} on {clause['policy_id']}")
+     return corpus, tuple(clauses)
+ 
+ 
+@@ -367,6 +372,8 @@
+             clause_version=clause["clause_version"],
+             is_fictional=clause["is_fictional"],
+             match_score=round(score, 4),
++            title_vi=str(clause.get("title_vi", "")),
++            content_vi=str(clause.get("content_vi", "")),
+         )
+         for score, clause in candidates[:limit]
+     )
+--- a/src/voxcare/http/routes.py
++++ b/src/voxcare/http/routes.py
+@@ -15,10 +15,11 @@
+ from fastapi.responses import FileResponse
+ 
+ from ..config import ConfigError, config_error_code, load_provider_settings, load_turn_settings, turn_mode_from_env
++from ..locales import API_DEFAULT_LOCALE, EN, SUPPORTED_LOCALES, VI, normalize_locale
+ from ..providers import provider_status
+-from ..session.render import HANDOFF_TEXT
++from ..session.render import handoff_text
+ from .bootstrap import STATIC_DIR, boundary
+-from .schemas import HandoffRequest, TextTurnRequest
++from .schemas import HandoffRequest, SessionRequest, TextTurnRequest
+ 
+ # Judged turn modes and the provider key each one requires.
+ JUDGED_TURN_MODES = {"jev": "TYPESAFE_API_KEY", "openrouter": "OPENROUTER_API_KEY"}
+@@ -52,15 +53,38 @@
+     }
+ 
+ 
+-def provider_payload() -> dict[str, Any]:
++def provider_payload(locale: str = EN) -> dict[str, Any]:
++    """Provider view with the speech providers for ``locale``."""
+     result: dict[str, Any] = {
+         name: {"name": state.name, "configured": state.configured, "model": state.model, "detail": state.detail}
+-        for name, state in provider_status().items()
++        for name, state in provider_status(locale).items()
+     }
+     result["turn_decision"] = turn_decision_status()
+     return result
+ 
+ 
++def language_payload() -> dict[str, Any]:
++    """Per-language speech readiness: ASR and TTS differ by language, the conversation model does not."""
++    languages: dict[str, Any] = {}
++    for locale in SUPPORTED_LOCALES:
++        providers = provider_payload(locale)
++        languages[locale] = {
++            "asr": providers["asr"],
++            "tts": providers["tts"],
++            "voice_ready": all(providers[name]["configured"] for name in ("asr", "conversation", "tts")),
++        }
++    return languages
++
++
++def _locale_or_422(request: SessionRequest | None) -> str | None:
++    if request is None or request.locale is None:
++        return None
++    try:
++        return normalize_locale(request.locale)
++    except ValueError:
++        raise HTTPException(status_code=422, detail="UNSUPPORTED_LOCALE") from None
++
++
+ def barge_in_mode() -> str:
+     try:
+         return load_turn_settings().barge_in
+@@ -87,14 +111,17 @@
+     async def config():  # type: ignore[no-untyped-def]
+         providers = provider_payload()
+         return {
+-            "locale": "en-US",
++            "locale": API_DEFAULT_LOCALE,
++            "locales": list(SUPPORTED_LOCALES),
++            "default_locale": VI,
++            "languages": language_payload(),
+             "session_customer": "CUST-001 (simulated)",
+             "turn_mode": turn_mode_from_env(),
+             "barge_in": barge_in_mode(),
+             "providers": providers,
+             "voice_ready": all(providers[name]["configured"] for name in ("asr", "conversation", "tts")),
+             "limitations": [
+-                "English only; simulated identity and fictional read-only OMS data.",
++                "Vietnamese and English; simulated identity and fictional read-only OMS data.",
+                 "Latency and accuracy benchmarks are not measured by this demo.",
+             ],
+         }
+@@ -104,7 +131,7 @@
+         return {"status": "ok"}
+ 
+     @app.post("/api/sessions")
+-    async def create_session():  # type: ignore[no-untyped-def]
++    async def create_session(request: SessionRequest | None = None):  # type: ignore[no-untyped-def]
+         # Invalid configuration fails loudly here with the variable name, never mid-turn.
+         try:
+             load_turn_settings()
+@@ -114,7 +141,7 @@
+             load_provider_settings()
+         except ConfigError as exc:
+             raise HTTPException(status_code=500, detail=config_error_code(exc, "PROVIDER_CONFIG_INVALID")) from None
+-        return session_payload(await boundary.create_session())
++        return session_payload(await boundary.create_session(_locale_or_422(request)))
+ 
+     @app.get("/api/sessions/{session_id}")
+     async def get_session(session_id: str):  # type: ignore[no-untyped-def]
+@@ -135,11 +162,12 @@
+         handoff = await boundary.record_handoff(session_id, reason=request.reason)
+         if handoff is None:
+             raise HTTPException(status_code=404, detail="SESSION_NOT_FOUND")
++        session = await boundary.get_session(session_id)
+         return {
+             "outcome": "HANDOFF_REQUEST_RECORDED",
+             "request_id": handoff["request_id"],
+             "status": handoff["status"],
+-            "message": HANDOFF_TEXT,
++            "message": handoff_text(session.locale if session is not None else EN),
+         }
+ 
+     @app.post("/api/sessions/{session_id}/turns")
+@@ -152,8 +180,8 @@
+         return turn_payload(result)
+ 
+     @app.post("/api/sessions/{session_id}/reset")
+-    async def reset_session(session_id: str):  # type: ignore[no-untyped-def]
+-        session = await boundary.reset_session(session_id)
++    async def reset_session(session_id: str, request: SessionRequest | None = None):  # type: ignore[no-untyped-def]
++        session = await boundary.reset_session(session_id, _locale_or_422(request))
+         if session is None:
+             raise HTTPException(status_code=404, detail="SESSION_NOT_FOUND")
+         return session_payload(session)
+@@ -166,6 +194,7 @@
+ __all__ = [
+     "JUDGED_TURN_MODES",
+     "barge_in_mode",
++    "language_payload",
+     "provider_payload",
+     "register",
+     "session_payload",
+--- a/src/voxcare/http/schemas.py
++++ b/src/voxcare/http/schemas.py
+@@ -10,8 +10,14 @@
+     source: str = "manual"
+ 
+ 
++class SessionRequest(BaseModel):
++    """Optional body of session create/reset: the conversation language (vi-VN or en-US)."""
++
++    locale: str | None = Field(default=None, max_length=16)
++
++
+ class HandoffRequest(BaseModel):
+     reason: str = Field(default="caller_requested_support", min_length=1, max_length=200)
+ 
+ 
+-__all__ = ["HandoffRequest", "TextTurnRequest"]
++__all__ = ["HandoffRequest", "SessionRequest", "TextTurnRequest"]
+--- a/src/voxcare/providers/asr.py
++++ b/src/voxcare/providers/asr.py
+@@ -180,11 +180,13 @@
+         self._last_partial = ""
+ 
+     @classmethod
+-    def from_env(cls) -> VoskConnection:
+-        try:
+-            model_path = load_provider_settings().vosk_model
+-        except ConfigError as exc:
+-            raise ProviderUnavailable(str(exc), code="ASR_PROVIDER_UNSUPPORTED") from None
++    def from_env(cls, model_path: str | None = None) -> VoskConnection:
++        """The configured model (``VOXCARE_VOSK_MODEL``), or ``model_path`` for another language."""
++        if model_path is None:
++            try:
++                model_path = load_provider_settings().vosk_model
++            except ConfigError as exc:
++                raise ProviderUnavailable(str(exc), code="ASR_PROVIDER_UNSUPPORTED") from None
+         if not model_path:
+             raise ProviderUnavailable("Vosk model path is not configured", code="VOSK_MODEL_NOT_CONFIGURED")
+         if not Path(model_path).is_dir():
+--- a/src/voxcare/providers/base.py
++++ b/src/voxcare/providers/base.py
+@@ -14,16 +14,19 @@
+ from pathlib import Path
+ 
+ from ..config import ConfigError, ProviderSettings, load_provider_settings
++from ..locales import EN, VI
+ from ..privacy import mask_pii
+ 
+ SYSTEM_PROMPT = (
+-    "You are VoxCare, an English voice support assistant for the fictional retailer VoxCom. "
++    "You are VoxCare, a voice support assistant for the fictional retailer VoxCom. "
++    "Callers speak Vietnamese or English; understand either. "
+     "Your only job is to choose which supplied read-only tool(s) answer the caller's latest request; "
+     "the application speaks the answer from the tool results, so never write facts yourself. "
+     "Never invent order, status, shipment, ETA, price, discount, fee, return eligibility, refund, or warranty facts, "
+     "and never request or attempt a business write (cancel, change, refund, reschedule). "
+     "Orders: order codes have the form ORD- plus four digits. Speech recognition may spell one out, e.g. "
+-    "'o r d four five six seven' or 'ord forty five sixty seven' for ORD-4567; convert the caller's own spoken "
++    "'o r d four five six seven' or 'ord forty five sixty seven' for ORD-4567, or in Vietnamese "
++    "'ô rờ đê bốn năm sáu bảy' or 'đơn hàng bốn năm sáu bảy'; convert the caller's own spoken "
+     "digits to that form before calling lookup_order_details (status and items) or track_shipment_status "
+     "(carrier, ETA), and never substitute a code the caller did not say. "
+     "A status plus a delivery question may need both tools. If no order code was given, call no tool. "
+@@ -31,6 +34,9 @@
+     "for two or three SKUs from earlier results, and apply_voucher to quote a demo voucher against an order value. "
+     "Policies: use retrieve_policy_clauses with the caller's question, a category (SHIPPING, INSTALLATION, "
+     "WARRANTY, RETURNS, or ALL), and only the brand/product category the caller explicitly gave (otherwise null). "
++    "Tool arguments are canonical whatever language the caller uses: ORD-#### codes, SKUs, the English "
++    "enum values, integer VND amounts ('mười lăm triệu' is 15000000), and an English query for "
++    "retrieve_policy_clauses. "
+     "If the caller explicitly asks for a person, call escalate_to_human; it only records the request. "
+     "For greetings, small talk, or anything the tools cannot answer, call no tool. "
+     "Never include customer IDs or arguments the tool schema does not define."
+@@ -57,32 +63,40 @@
+     return bool(os.getenv(name, "").strip())
+ 
+ 
+-def provider_status() -> dict[str, ProviderStatus]:
+-    """Credential-free provider view for ``/api/config``; never raises on bad configuration."""
++def provider_status(locale: str = EN) -> dict[str, ProviderStatus]:
++    """Credential-free provider view for ``/api/config``; never raises on bad configuration.
++
++    Speech providers (asr, tts) are reported for ``locale``; the conversation model is shared.
++    """
+     try:
+         settings = load_provider_settings()
+     except ConfigError as exc:
+         broken = ProviderStatus("Provider configuration error", False, None, str(exc))
+         return {"asr": broken, "conversation": broken, "conversation_fallback": broken, "tts": broken}
+     return {
+-        "asr": _asr_status(settings),
++        "asr": _asr_status(settings, locale),
+         "conversation": _conversation_status(settings),
+         "conversation_fallback": _fallback_status(settings),
+-        "tts": _tts_status(settings),
++        "tts": _tts_status(settings, locale),
+     }
+ 
+ 
+-def _asr_status(settings: ProviderSettings) -> ProviderStatus:
++def _language_name(locale: str) -> str:
++    return "Vietnamese" if locale == VI else "English"
++
++
++def _asr_status(settings: ProviderSettings, locale: str = EN) -> ProviderStatus:
++    language = _language_name(locale)
+     if settings.asr_provider == "vosk":
+-        path = settings.vosk_model
++        path = settings.vosk_model_vi if locale == VI else settings.vosk_model
+         return ProviderStatus(
+             "Vosk (offline)",
+             bool(path) and Path(path).is_dir(),
+             Path(path).name if path else None,
+-            "Offline streaming English ASR; demo deviation from the design provider set",
++            f"Offline streaming {language} ASR; demo deviation from the design provider set",
+         )
+     return ProviderStatus(
+-        "Deepgram Nova-2", _has_key("DEEPGRAM_API_KEY"), "nova-2", "Streaming English ASR over WebSocket"
++        "Deepgram Nova-2", _has_key("DEEPGRAM_API_KEY"), "nova-2", f"Streaming {language} ASR over WebSocket"
+     )
+ 
+ 
+@@ -110,14 +124,15 @@
+     return ProviderStatus(name, _has_key("OPENAI_API_KEY"), settings.openai_model, detail)
+ 
+ 
+-def _tts_status(settings: ProviderSettings) -> ProviderStatus:
++def _tts_status(settings: ProviderSettings, locale: str = EN) -> ProviderStatus:
+     if settings.tts_provider == "piper":
+-        path = settings.piper_model
++        path = settings.piper_model_vi if locale == VI else settings.piper_model
+         return ProviderStatus(
+             "Piper (offline)",
+             bool(path) and Path(path).is_file(),
+             Path(path).name if path else None,
+-            "Offline neural TTS, per-sentence PCM16; demo deviation from the design provider set",
++            f"Offline neural {_language_name(locale)} TTS, per-sentence PCM16; demo deviation from the design "
++            "provider set",
+         )
+     return ProviderStatus(
+         "ElevenLabs Flash v2.5",
+--- a/src/voxcare/providers/factories.py
++++ b/src/voxcare/providers/factories.py
+@@ -10,6 +10,7 @@
+ import os
+ 
+ from ..config import ConfigError, ProviderSettings, load_provider_settings
++from ..locales import EN, VI
+ from .asr import AsrConnection, DeepgramConnection, VoskConnection
+ from .base import ProviderUnavailable
+ from .llm import AnthropicMessagesAdapter, CascadeDialogueProvider, OpenAIChatCompletionsAdapter, OpenAIResponsesAdapter
+@@ -23,16 +24,42 @@
+         raise ProviderUnavailable(str(exc), code=code) from None
+ 
+ 
+-def asr_connection_from_env() -> AsrConnection:
+-    if _settings("ASR_PROVIDER_UNSUPPORTED").asr_provider == "vosk":
++# Deepgram language codes per session locale (Nova-2 supports both).
++DEEPGRAM_LANGUAGES = {EN: "en-US", VI: "vi"}
++
++
++def asr_connection_from_env(locale: str = EN) -> AsrConnection:
++    """Streaming ASR for one voice connection in the session's language."""
++    settings = _settings("ASR_PROVIDER_UNSUPPORTED")
++    if settings.asr_provider == "vosk":
++        if locale == VI:
++            if not settings.vosk_model_vi:
++                raise ProviderUnavailable(
++                    "Vietnamese Vosk model path is not configured", code="VOSK_MODEL_VI_NOT_CONFIGURED"
++                )
++            return VoskConnection.from_env(model_path=settings.vosk_model_vi)
+         return VoskConnection.from_env()
+-    return DeepgramConnection.from_env()
++    connection = DeepgramConnection.from_env()
++    connection.language = DEEPGRAM_LANGUAGES.get(locale, DEEPGRAM_LANGUAGES[EN])
++    return connection
+ 
+ 
+-def tts_from_env() -> SpeechSynthesizer:
+-    if _settings("TTS_PROVIDER_UNSUPPORTED").tts_provider == "piper":
++def tts_from_env(locale: str = EN) -> SpeechSynthesizer:
++    """Streaming TTS for one voice connection in the session's language."""
++    settings = _settings("TTS_PROVIDER_UNSUPPORTED")
++    if settings.tts_provider == "piper":
++        if locale == VI:
++            if not settings.piper_model_vi:
++                raise ProviderUnavailable(
++                    "Vietnamese Piper voice is not configured", code="PIPER_MODEL_VI_NOT_CONFIGURED"
++                )
++            return PiperTTS.from_env(model_path=settings.piper_model_vi)
+         return PiperTTS.from_env()
+-    return ElevenLabsTTS.from_env()
++    tts = ElevenLabsTTS.from_env()
++    voice_vi = os.getenv("ELEVENLABS_VOICE_ID_VI", "").strip()
++    if locale == VI and voice_vi:
++        tts.voice_id = voice_vi  # optional Vietnamese voice; Flash v2.5 is multilingual either way
++    return tts
+ 
+ 
+ def conversation_factory_from_env() -> CascadeDialogueProvider | None:
+--- a/src/voxcare/providers/tts.py
++++ b/src/voxcare/providers/tts.py
+@@ -172,8 +172,10 @@
+         return int(rate) if isinstance(rate, (int, float)) and rate > 0 else OUTPUT_SAMPLE_RATE
+ 
+     @classmethod
+-    def from_env(cls) -> PiperTTS:
+-        model_path = _settings().piper_model
++    def from_env(cls, model_path: str | None = None) -> PiperTTS:
++        """The configured voice (``VOXCARE_PIPER_MODEL``), or ``model_path`` for another language."""
++        if model_path is None:
++            model_path = _settings().piper_model
+         if not model_path:
+             raise ProviderUnavailable("Piper voice model is not configured", code="PIPER_MODEL_NOT_CONFIGURED")
+         if not Path(model_path).is_file():
+--- a/src/voxcare/session/boundary.py
++++ b/src/voxcare/session/boundary.py
+@@ -22,9 +22,10 @@
+ from ..contracts import MAX_TOOL_CALLS_PER_TURN, DialogueProvider, PlannedToolCall, SessionView, ToolOutcome, TurnResult
+ from ..domain.policy import PolicyRetriever
+ from ..domain.seed import SeedOMS
++from ..locales import API_DEFAULT_LOCALE, normalize_locale
+ from ..privacy import mask_pii
+ from ..trace import TraceLedger
+-from .render import CLARIFY_LIMIT_TEXT, CLARIFY_TEXT, render_results
++from .render import clarify_text, render_results
+ from .tools import (
+     CATALOG_TOOLS,
+     MAX_HANDOFF_REASON_CHARS,
+@@ -120,9 +121,11 @@
+             oldest_id = min(self._sessions, key=lambda sid: self._sessions[sid].last_touched_monotonic)
+             del self._sessions[oldest_id]
+ 
+-    async def create_session(self) -> SessionView:
++    async def create_session(self, locale: str | None = None) -> SessionView:
++        """A fresh session in ``locale`` (vi-VN or en-US; the API default when omitted)."""
+         session = _Session(
+             session_id=f"SES-{uuid.uuid4().hex}",
++            locale=normalize_locale(locale) if locale is not None else API_DEFAULT_LOCALE,
+             dialogue=self.dialogue_factory(),
+             turn_controller=self.turn_controller_factory() if self.turn_controller_factory else self.turn_controller,
+         )
+@@ -135,13 +138,15 @@
+         session = await self._active(session_id, touch=True)
+         return self._view(session) if session is not None else None
+ 
+-    async def reset_session(self, session_id: str) -> SessionView | None:
++    async def reset_session(self, session_id: str, locale: str | None = None) -> SessionView | None:
++        """Fence the old session and start a new one, in ``locale`` or else the old session's language."""
++        new_locale = normalize_locale(locale) if locale is not None else None
+         async with self._lock:
+             old = self._sessions.pop(session_id, None)
+             if old is None or not old.active:
+                 return None
+             old.active = False
+-        return await self.create_session()
++        return await self.create_session(new_locale or old.locale)
+ 
+     async def get_turn_controller(self, session_id: str) -> Any | None:
+         session = await self._active(session_id)
+@@ -311,7 +316,7 @@
+             audits.append(self._audit_tool(session, plan, tool_outcome, request_id, epoch))
+             tool_outcomes.append(tool_outcome)
+ 
+-        assistant_text, outcome = render_results(tool_outcomes)
++        assistant_text, outcome = render_results(tool_outcomes, locale=session.locale)
+         session.remember("assistant", assistant_text)
+         session.clarification_count = 0
+         policy = next((tool for tool in tool_outcomes if tool.tool_name == "retrieve_policy_clauses"), None)
+@@ -434,9 +439,9 @@
+     ) -> TurnResult:
+         session.clarification_count += 1
+         if session.clarification_count > MAX_CLARIFICATIONS:
+-            prompt, outcome = CLARIFY_LIMIT_TEXT, "CLARIFICATION_LIMIT_REACHED"
++            prompt, outcome = clarify_text(session.locale, limit=True), "CLARIFICATION_LIMIT_REACHED"
+         else:
+-            prompt, outcome = CLARIFY_TEXT, "NEEDS_ORDER_ID"
++            prompt, outcome = clarify_text(session.locale), "NEEDS_ORDER_ID"
+         session.remember("assistant", prompt)
+         event = _event("clarification_requested", session, request_id, epoch, count=session.clarification_count)
+         return _result(
+--- a/src/voxcare/session/render.py
++++ b/src/voxcare/session/render.py
+@@ -2,58 +2,247 @@
+ 
+ The conversation model only *plans* tool calls; the assistant text the caller
+ hears is rendered here from the tool outcomes, so the model cannot invent an
+-order status, ETA, price, policy term, or discount.
++order status, ETA, price, policy term, or discount. Every template exists in
++English and Vietnamese; the session locale picks one, and the facts slotted
++into it are the same tool-record values either way.
+ """
+ 
+ from __future__ import annotations
+ 
+-from collections.abc import Sequence
++from collections.abc import Mapping, Sequence
+ 
+ from ..contracts import ToolOutcome
++from ..locales import EN, VI
+ from .speech import concise_policy
+ from .tools import CATALOG_TOOLS
+ 
+-HANDOFF_TEXT = "Your request for human support was recorded. This demo does not make a live transfer."
+-CLARIFY_TEXT = (
+-    "I can help with order status and delivery if you share the order code, like ORD-1002. "
+-    "I can also search and compare products, check a demo voucher, or explain VoxCom shipping, "
+-    "installation, warranty and return policies. I can't change an order. What would you like to check?"
+-)
+-CLARIFY_LIMIT_TEXT = (
+-    "I still couldn't tell what to look up. Please share an order code or a product question, "
+-    "or request human support. You can also start a new demo session."
+-)
+-_RETRY_TEXT = "I couldn't retrieve that information right now. Please try again."
++TEXT: dict[str, dict[str, str]] = {
++    EN: {
++        "handoff": "Your request for human support was recorded. This demo does not make a live transfer.",
++        "clarify": (
++            "I can help with order status and delivery if you share the order code, like ORD-1002. "
++            "I can also search and compare products, check a demo voucher, or explain VoxCom shipping, "
++            "installation, warranty and return policies. I can't change an order. What would you like to check?"
++        ),
++        "clarify_limit": (
++            "I still couldn't tell what to look up. Please share an order code or a product question, "
++            "or request human support. You can also start a new demo session."
++        ),
++        "retry": "I couldn't retrieve that information right now. Please try again.",
++        "not_allowlisted": (
++            "I can't perform that action. This demo only supports order, delivery, catalog, voucher and policy lookups."
++        ),
++        "policy_invalid": "I couldn't safely process that policy question. Please rephrase it.",
++        "policy_unavailable": (
++            "Policy lookup is unavailable right now, so I can't verify the applicable terms. You can request support."
++        ),
++        "policy_answer": "According to fictional VoxCom demo policy ({ids}): {clauses}",
++        "policy_needs_context": (
++            "I need more information to identify the applicable fictional policy, including the {missing}."
++        ),
++        "policy_missing_default": "product and brand",
++        "policy_missing_join": " and ",
++        "policy_insufficient": (
++            "I don't have applicable policy evidence for that question, so I can't confirm the term. "
++            "You can request support."
++        ),
++        "order_invalid": "I couldn't safely process that lookup. Please try again with your order code.",
++        "order_missing": "I can look up order status and delivery. Please share the order code, like ORD-1002.",
++        "order_not_found": "I couldn't find an order with that code. Please check it and try again.",
++        "order_out_of_scope": "I can only share details for orders in this simulated customer session.",
++        "order_status_items": "Order {code} is {status}. Item(s): {names}.",
++        "order_status": "Order {code} is {status}.",
++        "shipment_none": "I found order {code}, but no shipment record or carrier delivery estimate is available yet.",
++        "shipment_status": "Order {code} is {status}",
++        "shipment_status_unknown": "Order {code} shipment status is unavailable",
++        "shipment_carrier": " with {carrier}",
++        "shipment_eta": "The carrier currently estimates delivery on {eta}",
++        "shipment_no_eta": "No carrier delivery estimate is available",
++        "product": "{name} ({sku}) at {price} VND",
++        "catalog_found_one": "I found 1 model in our catalog: {listed}.",
++        "catalog_found_many": "I found {count} models in our catalog: {listed}.",
++        "compare": "Comparing {count} {category} models on recorded attributes: {listed}.",
++        "voucher_ok": (
++            "Voucher {code} applies: {discount} VND off, for a quoted price of {quoted} VND. "
++            "This is a quote only; no order was changed."
++        ),
++        "catalog_invalid_args": "I couldn't safely process that catalog request. Please try again.",
++        "catalog_missing_sku": "I cannot find {sku} in our catalog.",
++        "catalog_not_found": "I could not find a matching model in our catalog.",
++        "compare_invalid": (
++            "I can compare two or three models from the same category. Which models would you like to compare?"
++        ),
++        "voucher_invalid_default": "Voucher {code} is not applicable in this demo.",
++        "catalog_invalid": "That catalog request is not valid in this demo. Please name a product category.",
++        "out_of_stock": "{skus} is out of stock today.",
++        "out_of_stock_default": "the requested model",
++        "voucher_code_default": "that",
++        "category_default": "those",
++        "value_default": "that",
++    },
++    VI: {
++        "handoff": "Yêu cầu hỗ trợ từ nhân viên của bạn đã được ghi nhận. Bản demo này không chuyển máy trực tiếp.",
++        "clarify": (
++            "Tôi có thể giúp tra cứu trạng thái và giao hàng nếu bạn cho biết mã đơn hàng, ví dụ ORD-1002. "
++            "Tôi cũng có thể tìm và so sánh sản phẩm, kiểm tra voucher demo, hoặc giải thích chính sách giao hàng, "
++            "lắp đặt, bảo hành và đổi trả của VoxCom. Tôi không thể thay đổi đơn hàng. Bạn muốn kiểm tra gì?"
++        ),
++        "clarify_limit": (
++            "Tôi vẫn chưa xác định được cần tra cứu gì. Bạn vui lòng cho biết mã đơn hàng hoặc câu hỏi về sản phẩm, "
++            "hoặc yêu cầu hỗ trợ từ nhân viên. Bạn cũng có thể bắt đầu một phiên demo mới."
++        ),
++        "retry": "Hiện tôi chưa lấy được thông tin này. Bạn vui lòng thử lại.",
++        "not_allowlisted": (
++            "Tôi không thể thực hiện thao tác đó. Bản demo này chỉ hỗ trợ tra cứu đơn hàng, giao hàng, "
++            "sản phẩm, voucher và chính sách."
++        ),
++        "policy_invalid": "Tôi chưa thể xử lý câu hỏi chính sách này một cách an toàn. Bạn vui lòng diễn đạt lại.",
++        "policy_unavailable": (
++            "Hiện chưa tra cứu được chính sách nên tôi không thể xác nhận điều khoản áp dụng. "
++            "Bạn có thể yêu cầu hỗ trợ."
++        ),
++        "policy_answer": "Theo chính sách demo giả lập của VoxCom ({ids}): {clauses}",
++        "policy_needs_context": "Tôi cần thêm thông tin để xác định chính sách giả lập áp dụng, gồm {missing}.",
++        "policy_missing_default": "loại sản phẩm và thương hiệu",
++        "policy_missing_join": " và ",
++        "policy_insufficient": (
++            "Tôi không có điều khoản chính sách phù hợp cho câu hỏi này nên không thể xác nhận. "
++            "Bạn có thể yêu cầu hỗ trợ."
++        ),
++        "order_invalid": (
++            "Tôi chưa thể xử lý yêu cầu tra cứu này một cách an toàn. Bạn vui lòng thử lại với mã đơn hàng."
++        ),
++        "order_missing": (
++            "Tôi có thể tra cứu trạng thái và giao hàng của đơn. Bạn vui lòng cho biết mã đơn hàng, ví dụ ORD-1002."
++        ),
++        "order_not_found": "Tôi không tìm thấy đơn hàng có mã này. Bạn vui lòng kiểm tra lại mã và thử lại.",
++        "order_out_of_scope": "Tôi chỉ có thể cung cấp thông tin đơn hàng thuộc phiên khách hàng giả lập này.",
++        "order_status_items": "Đơn hàng {code} {status}. Sản phẩm: {names}.",
++        "order_status": "Đơn hàng {code} {status}.",
++        "shipment_none": (
++            "Tôi đã tìm thấy đơn hàng {code}, nhưng chưa có thông tin vận chuyển hay ngày giao dự kiến "
++            "từ đơn vị vận chuyển."
++        ),
++        "shipment_status": "Đơn hàng {code} {status}",
++        "shipment_status_unknown": "Chưa có trạng thái vận chuyển của đơn hàng {code}",
++        "shipment_carrier": " với {carrier}",
++        "shipment_eta": "Đơn vị vận chuyển dự kiến giao vào ngày {eta}",
++        "shipment_no_eta": "Chưa có ngày giao dự kiến từ đơn vị vận chuyển",
++        "product": "{name} ({sku}) giá {price} VND",
++        "catalog_found_one": "Tôi tìm thấy 1 mẫu trong danh mục: {listed}.",
++        "catalog_found_many": "Tôi tìm thấy {count} mẫu trong danh mục: {listed}.",
++        "compare": "So sánh {count} mẫu {category} theo thông số đã ghi nhận: {listed}.",
++        "voucher_ok": (
++            "Voucher {code} áp dụng được: giảm {discount} VND, giá tạm tính còn {quoted} VND. "
++            "Đây chỉ là báo giá; đơn hàng không bị thay đổi."
++        ),
++        "catalog_invalid_args": "Tôi chưa thể xử lý yêu cầu về sản phẩm này một cách an toàn. Bạn vui lòng thử lại.",
++        "catalog_missing_sku": "Tôi không tìm thấy {sku} trong danh mục.",
++        "catalog_not_found": "Tôi không tìm thấy mẫu phù hợp trong danh mục.",
++        "compare_invalid": "Tôi có thể so sánh hai hoặc ba mẫu cùng loại. Bạn muốn so sánh những mẫu nào?",
++        "voucher_invalid_default": "Voucher {code} không áp dụng được trong bản demo này.",
++        "catalog_invalid": "Yêu cầu về sản phẩm này không hợp lệ trong bản demo. Bạn vui lòng nêu loại sản phẩm.",
++        "out_of_stock": "{skus} hiện đã hết hàng.",
++        "out_of_stock_default": "Mẫu bạn yêu cầu",
++        "voucher_code_default": "này",
++        "category_default": "này",
++        "value_default": "mức này",
++    },
++}
++
++# Kept for importers of the English constants.
++HANDOFF_TEXT = TEXT[EN]["handoff"]
++CLARIFY_TEXT = TEXT[EN]["clarify"]
++CLARIFY_LIMIT_TEXT = TEXT[EN]["clarify_limit"]
++_RETRY_TEXT = TEXT[EN]["retry"]
+ 
+ _CATEGORY_LABELS = {
+-    "TV_AV": "TV and audio",
+-    "REFRIGERATOR": "refrigerator",
+-    "WASHING_MACHINE": "washing machine",
+-    "AIR_CONDITIONER": "air conditioner",
+-    "KITCHEN": "kitchen",
++    EN: {
++        "TV_AV": "TV and audio",
++        "REFRIGERATOR": "refrigerator",
++        "WASHING_MACHINE": "washing machine",
++        "AIR_CONDITIONER": "air conditioner",
++        "KITCHEN": "kitchen",
++    },
++    VI: {
++        "TV_AV": "TV và âm thanh",
++        "REFRIGERATOR": "tủ lạnh",
++        "WASHING_MACHINE": "máy giặt",
++        "AIR_CONDITIONER": "máy lạnh",
++        "KITCHEN": "đồ dùng nhà bếp",
++    },
+ }
+ _VOUCHER_REASONS = {
+-    "UNKNOWN_CODE": "I couldn't find voucher {code} in this demo.",
+-    "CATEGORY_MISMATCH": "Voucher {code} does not apply to {category} products.",
+-    "BELOW_MINIMUM": "Voucher {code} needs a higher order value than {value} VND.",
+-    "EXPIRED": "Voucher {code} is not valid on the demo date.",
+-    "INVALID_CATEGORY": "I need a valid product category to check voucher {code}.",
+-    "INVALID_ORDER_VALUE": "I need a valid order value to check voucher {code}.",
++    EN: {
++        "UNKNOWN_CODE": "I couldn't find voucher {code} in this demo.",
++        "CATEGORY_MISMATCH": "Voucher {code} does not apply to {category} products.",
++        "BELOW_MINIMUM": "Voucher {code} needs a higher order value than {value} VND.",
++        "EXPIRED": "Voucher {code} is not valid on the demo date.",
++        "INVALID_CATEGORY": "I need a valid product category to check voucher {code}.",
++        "INVALID_ORDER_VALUE": "I need a valid order value to check voucher {code}.",
++    },
++    VI: {
++        "UNKNOWN_CODE": "Tôi không tìm thấy voucher {code} trong bản demo.",
++        "CATEGORY_MISMATCH": "Voucher {code} không áp dụng cho sản phẩm {category}.",
++        "BELOW_MINIMUM": "Voucher {code} cần giá trị đơn hàng cao hơn {value} VND.",
++        "EXPIRED": "Voucher {code} không còn hiệu lực vào ngày demo.",
++        "INVALID_CATEGORY": "Tôi cần loại sản phẩm hợp lệ để kiểm tra voucher {code}.",
++        "INVALID_ORDER_VALUE": "Tôi cần giá trị đơn hàng hợp lệ để kiểm tra voucher {code}.",
++    },
+ }
++# Record status codes -> the phrase after "Đơn hàng ORD-#### ...". English keeps "is <status>".
++_VI_ORDER_STATUS = {
++    "confirmed": "đã được xác nhận",
++    "processing": "đang được xử lý",
++    "shipped": "đã được gửi đi",
++    "delivered": "đã được giao",
++    "cancelled": "đã bị huỷ",
++    "in_transit": "đang được vận chuyển",
++    "out_for_delivery": "đang được giao đến bạn",
++    "pending": "đang chờ xử lý",
++}
++_VI_MISSING_CONTEXT = {"product_category": "loại sản phẩm", "brand": "thương hiệu"}
++
++
++def _t(locale: str, key: str) -> str:
++    return TEXT.get(locale, TEXT[EN])[key]
++
++
++def _money(value: object, locale: str) -> str:
++    """Thousands-separated VND amount: 11,500,000 in English, 11.500.000 in Vietnamese."""
++    if not isinstance(value, int) or isinstance(value, bool):
++        return str(value)
++    text = f"{value:,}"
++    return text.replace(",", ".") if locale == VI else text
++
+ 
++def _date(value: object, locale: str) -> str:
++    """Record dates are ISO (2026-10-15); Vietnamese screens read them day/month/year."""
++    text = str(value)
++    if locale == VI and len(text) == 10 and text[4] == "-" and text[7] == "-":
++        return f"{text[8:10]}/{text[5:7]}/{text[0:4]}"
++    return text
+ 
+-def render_results(tools: Sequence[ToolOutcome], *, voice: bool = False) -> tuple[str, str]:
++
++def _status(raw: object, locale: str) -> str:
++    code = str(raw or "")
++    if locale == VI:
++        return _VI_ORDER_STATUS.get(code, f"có trạng thái {code.replace('_', ' ')}")
++    return code.replace("_", " ")
++
++
++def render_results(tools: Sequence[ToolOutcome], *, voice: bool = False, locale: str = EN) -> tuple[str, str]:
+     """Compose one answer from every executed tool result, in emission order.
+ 
+-    A recorded handoff wins outright; otherwise every fragment is joined so a
+-    multi-call turn answers each lookup. The outcome is ANSWERED when every
+-    call answered, else the first non-answered outcome in emission order.
+-    ``voice=True`` renders the spoken variant (see :mod:`.speech`): same
+-    outcome, shorter policy text.
++    A recorded handoff wins outright; otherwise every distinct fragment is
++    joined so a multi-call turn answers each lookup. The outcome is ANSWERED
++    when every call answered, else the first non-answered outcome in emission
++    order. ``voice=True`` renders the spoken variant (see :mod:`.speech`):
++    same outcome, shorter policy text.
+     """
+     if any(tool.status == "HANDOFF_REQUEST_RECORDED" for tool in tools):
+-        return HANDOFF_TEXT, "HANDOFF_REQUEST_RECORDED"
+-    rendered = [render_result(tool, voice=voice) for tool in tools]
++        return _t(locale, "handoff"), "HANDOFF_REQUEST_RECORDED"
++    rendered = [render_result(tool, voice=voice, locale=locale) for tool in tools]
+     outcome = next((outcome for _, outcome in rendered if outcome != "ANSWERED"), "ANSWERED")
+     # Two lookups for one bad order code (details + shipment) render the same refusal;
+     # speak each distinct fragment once, in emission order.
+@@ -61,145 +250,160 @@
+     return " ".join(texts), outcome
+ 
+ 
+-def render_result(tool: ToolOutcome, *, voice: bool = False) -> tuple[str, str]:
++def render_result(tool: ToolOutcome, *, voice: bool = False, locale: str = EN) -> tuple[str, str]:
+     if tool.status == "HANDOFF_REQUEST_RECORDED":
+-        return HANDOFF_TEXT, "HANDOFF_REQUEST_RECORDED"
++        return _t(locale, "handoff"), "HANDOFF_REQUEST_RECORDED"
+     if tool.error_code == "TOOL_NOT_ALLOWLISTED":
+-        return (
+-            "I can't perform that action. This demo only supports order, delivery, catalog, voucher "
+-            "and policy lookups.",
+-            "TOOL_ERROR",
+-        )
++        return _t(locale, "not_allowlisted"), "TOOL_ERROR"
+     if tool.tool_name == "retrieve_policy_clauses":
+-        return _render_policy(tool, voice=voice)
++        return _render_policy(tool, voice=voice, locale=locale)
+     if tool.tool_name in CATALOG_TOOLS:
+-        return _render_catalog(tool)
+-    return _render_order(tool)
++        return _render_catalog(tool, locale)
++    return _render_order(tool, locale)
++
++
++def clause_text(item: Mapping[str, object], locale: str) -> str:
++    """A clause's text in the session language (the English text when no translation exists)."""
++    if locale == VI and item.get("content_vi"):
++        return str(item["content_vi"])
++    return str(item.get("content_en", ""))
+ 
+ 
+-def _render_policy(tool: ToolOutcome, *, voice: bool = False) -> tuple[str, str]:
++def _render_policy(tool: ToolOutcome, *, voice: bool = False, locale: str = EN) -> tuple[str, str]:
+     record = tool.record or {}
+     if tool.error_code == "INVALID_TOOL_ARGUMENTS":
+-        return "I couldn't safely process that policy question. Please rephrase it.", "TOOL_ERROR"
++        return _t(locale, "policy_invalid"), "TOOL_ERROR"
+     if tool.status in {"SERVICE_ERROR", "DEPENDENCY_UNAVAILABLE", "SERVICE_TIMEOUT", "TOOL_ERROR"}:
+         outcome = "DEPENDENCY_UNAVAILABLE" if tool.status == "DEPENDENCY_UNAVAILABLE" else "TOOL_ERROR"
+-        return (
+-            "Policy lookup is unavailable right now, so I can't verify the applicable terms. You can request support.",
+-            outcome,
+-        )
++        return _t(locale, "policy_unavailable"), outcome
+     if tool.status == "SUCCESS" and tool.evidence:
+         if voice:
+-            return concise_policy(tool.evidence), "ANSWERED"
+-        clauses = " ".join(str(item.get("content_en", "")) for item in tool.evidence)
++            return concise_policy(tool.evidence, locale=locale), "ANSWERED"
++        clauses = " ".join(clause_text(item, locale) for item in tool.evidence)
+         ids = ", ".join(str(item.get("policy_id", "")) for item in tool.evidence)
+-        return f"According to fictional VoxCom demo policy ({ids}): {clauses}", "ANSWERED"
++        return _t(locale, "policy_answer").format(ids=ids, clauses=clauses), "ANSWERED"
+     if tool.status == "NEEDS_CONTEXT":
+-        missing = " and ".join(str(item).replace("_", " ") for item in record.get("missing_context", ()))
+-        return (
+-            "I need more information to identify the applicable fictional policy, "
+-            f"including the {missing or 'product and brand'}.",
+-            "INSUFFICIENT_EVIDENCE",
+-        )
+-    return (
+-        "I don't have applicable policy evidence for that question, so I can't confirm the term. "
+-        "You can request support.",
+-        "INSUFFICIENT_EVIDENCE",
+-    )
++        fields = [str(item) for item in record.get("missing_context", ())]
++        if locale == VI:
++            names = [_VI_MISSING_CONTEXT.get(field, field.replace("_", " ")) for field in fields]
++        else:
++            names = [field.replace("_", " ") for field in fields]
++        missing = _t(locale, "policy_missing_join").join(names) or _t(locale, "policy_missing_default")
++        return _t(locale, "policy_needs_context").format(missing=missing), "INSUFFICIENT_EVIDENCE"
++    return _t(locale, "policy_insufficient"), "INSUFFICIENT_EVIDENCE"
+ 
+ 
+-def _render_order(tool: ToolOutcome) -> tuple[str, str]:
++def _render_order(tool: ToolOutcome, locale: str = EN) -> tuple[str, str]:
+     if tool.error_code == "INVALID_TOOL_ARGUMENTS":
+-        return "I couldn't safely process that lookup. Please try again with your order code.", "TOOL_ERROR"
++        return _t(locale, "order_invalid"), "TOOL_ERROR"
+     if tool.status == "MISSING_INPUT":
+-        return "I can look up order status and delivery. Please share the order code, like ORD-1002.", "NEEDS_ORDER_ID"
++        return _t(locale, "order_missing"), "NEEDS_ORDER_ID"
+     if tool.status == "NOT_FOUND":
+-        return "I couldn't find an order with that code. Please check it and try again.", "NOT_FOUND"
++        return _t(locale, "order_not_found"), "NOT_FOUND"
+     if tool.status == "OUT_OF_SCOPE":
+-        return "I can only share details for orders in this simulated customer session.", "OUT_OF_SCOPE"
++        return _t(locale, "order_out_of_scope"), "OUT_OF_SCOPE"
+     if tool.status != "SUCCESS":
+-        return _RETRY_TEXT, "TOOL_ERROR"
++        return _t(locale, "retry"), "TOOL_ERROR"
+     record = tool.record or {}
+     code = str(record.get("order_code", ""))
+     if tool.tool_name == "lookup_order_details":
+-        status = str(record.get("status", "")).replace("_", " ")
++        status = _status(record.get("status"), locale)
+         items = record.get("items") or []
+         names = ", ".join(
+             str(item.get("product_name", item.get("sku", ""))) for item in items if isinstance(item, dict)
+         )
+         if names:
+-            return f"Order {code} is {status}. Item(s): {names}.", "ANSWERED"
+-        return f"Order {code} is {status}.", "ANSWERED"
++            return _t(locale, "order_status_items").format(code=code, status=status, names=names), "ANSWERED"
++        return _t(locale, "order_status").format(code=code, status=status), "ANSWERED"
+     shipment = record.get("shipment")
+     if shipment is None:
+-        return (
+-            f"I found order {code}, but no shipment record or carrier delivery estimate is available yet.",
+-            "ANSWERED",
+-        )
++        return _t(locale, "shipment_none").format(code=code), "ANSWERED"
+     carrier = shipment.get("carrier")
+-    status = str(shipment.get("status") or "").replace("_", " ")
+     eta = shipment.get("estimated_delivery_date")
+-    first = f"Order {code} is {status}" if status else f"Order {code} shipment status is unavailable"
++    if shipment.get("status"):
++        first = _t(locale, "shipment_status").format(code=code, status=_status(shipment.get("status"), locale))
++    else:
++        first = _t(locale, "shipment_status_unknown").format(code=code)
+     if carrier:
+-        first += f" with {carrier}"
+-    second = (
+-        f"The carrier currently estimates delivery on {eta}" if eta else "No carrier delivery estimate is available"
+-    )
++        first += _t(locale, "shipment_carrier").format(carrier=carrier)
++    second = _t(locale, "shipment_eta").format(eta=_date(eta, locale)) if eta else _t(locale, "shipment_no_eta")
+     return f"{first}. {second}.", "ANSWERED"
+ 
+ 
+-def _product_phrase(row: dict) -> str:
+-    return f"{row.get('name') or row.get('sku')} ({row.get('sku')}) at {row.get('price_vnd'):,} VND"
++def _product_phrase(row: dict, locale: str = EN) -> str:
++    return _t(locale, "product").format(
++        name=row.get("name") or row.get("sku"), sku=row.get("sku"), price=_money(row.get("price_vnd"), locale)
++    )
+ 
+ 
+-def _render_catalog(tool: ToolOutcome) -> tuple[str, str]:
++def _render_catalog(tool: ToolOutcome, locale: str = EN) -> tuple[str, str]:
+     record = tool.record or {}
++    labels = _CATEGORY_LABELS.get(locale, _CATEGORY_LABELS[EN])
+     if tool.error_code == "INVALID_TOOL_ARGUMENTS":
+-        return "I couldn't safely process that catalog request. Please try again.", "TOOL_ERROR"
++        return _t(locale, "catalog_invalid_args"), "TOOL_ERROR"
+     if tool.status == "SUCCESS":
+         if tool.tool_name == "search_catalog":
+             matches = record.get("matches", [])
+-            listed = "; ".join(_product_phrase(item) for item in matches)
+-            noun = "model" if len(matches) == 1 else "models"
+-            return f"I found {len(matches)} {noun} in our catalog: {listed}.", "ANSWERED"
++            listed = "; ".join(_product_phrase(item, locale) for item in matches)
++            key = "catalog_found_one" if len(matches) == 1 else "catalog_found_many"
++            return _t(locale, key).format(count=len(matches), listed=listed), "ANSWERED"
+         if tool.tool_name == "compare_products":
+             rows = record.get("comparison", [])
+-            category = _CATEGORY_LABELS.get(str(record.get("category")), str(record.get("category")))
+-            listed = "; ".join(_product_phrase(row) for row in rows)
+-            return f"Comparing {len(rows)} {category} models on recorded attributes: {listed}.", "ANSWERED"
++            category = labels.get(str(record.get("category")), str(record.get("category")))
++            listed = "; ".join(_product_phrase(row, locale) for row in rows)
++            return _t(locale, "compare").format(count=len(rows), category=category, listed=listed), "ANSWERED"
+         return (
+-            f"Voucher {record.get('voucher_code')} applies: {record.get('discount_vnd', 0):,} VND off, "
+-            f"for a quoted price of {record.get('quoted_price_vnd'):,} VND. "
+-            "This is a quote only; no order was changed.",
++            _t(locale, "voucher_ok").format(
++                code=record.get("voucher_code"),
++                discount=_money(record.get("discount_vnd", 0), locale),
++                quoted=_money(record.get("quoted_price_vnd"), locale),
++            ),
+             "ANSWERED",
+         )
+     if tool.status == "NOT_FOUND":
+         missing = record.get("missing_sku")
+         if missing:
+-            return f"I cannot find {missing} in our catalog.", "NOT_FOUND"
+-        return "I could not find a matching model in our catalog.", "NOT_FOUND"
++            return _t(locale, "catalog_missing_sku").format(sku=missing), "NOT_FOUND"
++        return _t(locale, "catalog_not_found"), "NOT_FOUND"
+     if tool.status == "INVALID_INPUT":
+         if tool.tool_name == "compare_products":
+-            return (
+-                "I can compare two or three models from the same category. Which models would you like to compare?",
+-                "INVALID_INPUT",
+-            )
++            return _t(locale, "compare_invalid"), "INVALID_INPUT"
+         if tool.tool_name == "apply_voucher":
+-            template = _VOUCHER_REASONS.get(str(record.get("reason")), "Voucher {code} is not applicable in this demo.")
+-            category = _CATEGORY_LABELS.get(str(record.get("category")), "those")
++            reasons = _VOUCHER_REASONS.get(locale, _VOUCHER_REASONS[EN])
++            template = reasons.get(str(record.get("reason")), _t(locale, "voucher_invalid_default"))
++            category = labels.get(str(record.get("category")), _t(locale, "category_default"))
+             value = record.get("order_value_vnd")
+             return (
+                 template.format(
+-                    code=record.get("voucher_code") or "that",
++                    code=record.get("voucher_code") or _t(locale, "voucher_code_default"),
+                     category=category,
+-                    value=f"{value:,}" if isinstance(value, int) else "that",
++                    value=_money(value, locale) if isinstance(value, int) else _t(locale, "value_default"),
+                 ),
+                 "INVALID_INPUT",
+             )
+-        return "That catalog request is not valid in this demo. Please name a product category.", "INVALID_INPUT"
++        return _t(locale, "catalog_invalid"), "INVALID_INPUT"
+     if tool.status == "STATE_CONFLICT":
+-        skus = ", ".join(record.get("out_of_stock_skus", ())) or "the requested model"
+-        return f"{skus} is out of stock today.", "STATE_CONFLICT"
+-    return _RETRY_TEXT, "TOOL_ERROR"
+-
+-
+-__all__ = ["CLARIFY_LIMIT_TEXT", "CLARIFY_TEXT", "HANDOFF_TEXT", "render_result", "render_results"]
++        skus = ", ".join(record.get("out_of_stock_skus", ())) or _t(locale, "out_of_stock_default")
++        return _t(locale, "out_of_stock").format(skus=skus), "STATE_CONFLICT"
++    return _t(locale, "retry"), "TOOL_ERROR"
++
++
++def handoff_text(locale: str = EN) -> str:
++    return _t(locale, "handoff")
++
++
++def clarify_text(locale: str = EN, *, limit: bool = False) -> str:
++    return _t(locale, "clarify_limit" if limit else "clarify")
++
++
++__all__ = [
++    "CLARIFY_LIMIT_TEXT",
++    "CLARIFY_TEXT",
++    "HANDOFF_TEXT",
++    "TEXT",
++    "clarify_text",
++    "clause_text",
++    "handoff_text",
++    "render_result",
++    "render_results",
++]
+--- a/src/voxcare/session/speech.py
++++ b/src/voxcare/session/speech.py
+@@ -4,26 +4,31 @@
+ *hears* is derived from the same tool outcomes by deterministic rewrites only:
+ no fact is added, and the policy answer is shortened to the first sentence of
+ the top-ranked clause, with a count of the other clauses and a pointer to the
+-full text on screen. Without this, TTS reads
+-``2026-10-15`` as "two thousand twenty six dash ten dash fifteen", ``VND`` as
+-letters, and every clause id letter by letter, and a two-clause policy answer
+-runs close to a minute of audio.
++full text on screen. Without this, TTS reads ``2026-10-15`` as "two thousand
++twenty six dash ten dash fifteen", ``VND`` as letters, and every clause id
++letter by letter, and a two-clause policy answer runs close to a minute.
++
++Vietnamese answers additionally have every number spelled out in words
++("11.500.000 VND" -> "mười một triệu năm trăm nghìn đồng"), so the voice never
++has to guess whether a dot is a thousands separator or a decimal point.
+ """
+ 
+ from __future__ import annotations
+ 
+ import calendar
+ import re
+-from collections.abc import Sequence
++from collections.abc import Mapping, Sequence
+ 
+ from ..contracts import ToolOutcome
++from ..locales import EN, VI
+ 
+ # Clauses spoken per policy answer, one sentence each.
+ MAX_SPOKEN_POLICY_CLAUSES = 1
+ POLICY_SCREEN_POINTER = "The full clause text is shown in the transcript."
++POLICY_SCREEN_POINTER_VI = "Toàn văn điều khoản được hiển thị trong phần hội thoại."
+ 
+ _DIGIT_WORDS = ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
+-_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z(])")
++_VI_DIGITS = ("không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín")
+ _ISO_DATE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+ _DMY_DATE = re.compile(r"\b(\d{2})/(\d{2})/(\d{4})\b")  # VN-market clauses write day/month/year
+ _POLICY_IDS = re.compile(r"\s*\((?:POL-[A-Z]+-\d{3})(?:,\s*POL-[A-Z]+-\d{3})*\)")
+@@ -32,6 +37,17 @@
+ _VND_PER = re.compile(r"\bVND/([a-z]+)\b")
+ _VND = re.compile(r"\bVND\b")
+ _UNDERSCORE_CODE = re.compile(r"\b([A-Z][A-Z0-9]*)_([A-Z0-9]+)\b")
++_VI_ISO_DATE = re.compile(r"(?:\bngày\s+)?\b(\d{4})-(\d{2})-(\d{2})\b")
++_VI_DMY_DATE = re.compile(r"(?:\bngày\s+)?\b(\d{2})/(\d{2})/(\d{4})\b")
++_DIGIT_GROUPS = re.compile(r"(?<![\w.,])\d{3,4}(?: \d{3,4})+(?!\w|[.,]\d)")  # hotlines such as 1800 1593
++_VI_NUMBER = re.compile(r"(?<![\w.,])(\d{1,3}(?:\.\d{3})+|\d+)(?![\w]|[.,]\d)")
++_VI_UNITS = (
++    (re.compile(r"(?<=\d)\s*km\b|\bkm\b"), " ki lô mét"),
++    (re.compile(r"(?<=\d)\s*kg\b|\bkg\b"), " ki lô gam"),
++    (re.compile(r"(?<=\d)\s*m\b"), " mét"),
++    (re.compile(r"(?<=\d)\s*L\b|(?<=\d)\s*lít\b"), " lít"),
++    (re.compile(r"(?<=\d)\s*%"), " phần trăm"),
++)
+ 
+ 
+ def _date(year: str, month: str, day: str) -> str | None:
+@@ -41,10 +57,85 @@
+     return f"{calendar.month_name[m]} {d}, {int(year)}"
+ 
+ 
+-def speakable(text: str) -> str:
++def _vi_date(year: str, month: str, day: str) -> str | None:
++    m, d = int(month), int(day)
++    if not (1 <= m <= 12 and 1 <= d <= 31):
++        return None
++    return f"ngày {d} tháng {m} năm {int(year)}"
++
++
++def _vi_below_thousand(n: int, *, full: bool) -> str:
++    """0 < n < 1000. ``full`` reads a leading zero hundred ("không trăm") inside a larger number."""
++    hundreds, rest = divmod(n, 100)
++    tens, units = divmod(rest, 10)
++    words: list[str] = []
++    if hundreds or full:
++        words += [_VI_DIGITS[hundreds], "trăm"]
++    if tens == 0:
++        if units:
++            if words:
++                words.append("linh")
++            words.append(_VI_DIGITS[units])
++        return " ".join(words)
++    if tens == 1:
++        words.append("mười")
++    else:
++        words += [_VI_DIGITS[tens], "mươi"]
++    if units == 1 and tens > 1:
++        words.append("mốt")
++    elif units == 5:
++        words.append("lăm")
++    elif units:
++        words.append(_VI_DIGITS[units])
++    return " ".join(words)
++
++
++def vi_number(n: int) -> str:
++    """Vietnamese words for a non-negative integer, e.g. 11500000 -> 'mười một triệu năm trăm nghìn'."""
++    if n == 0:
++        return "không"
++    scales = ("", "nghìn", "triệu", "tỷ")
++    groups: list[int] = []
++    while n:
++        n, group = divmod(n, 1000)
++        groups.append(group)
++    if len(groups) > len(scales):
++        return " ".join(_VI_DIGITS[int(c)] for c in str(n))
++    words: list[str] = []
++    for index in range(len(groups) - 1, -1, -1):
++        group = groups[index]
++        if not group:
++            continue
++        words.append(_vi_below_thousand(group, full=index < len(groups) - 1))
++        if scales[index]:
++            words.append(scales[index])
++    return " ".join(words)
++
++
++def _vi_number_token(match: re.Match[str]) -> str:
++    raw = match.group(1)
++    if "." not in raw and len(raw) > 4:
++        return " ".join(_VI_DIGITS[int(c)] for c in raw)  # phone numbers, long codes: digit by digit
++    return vi_number(int(raw.replace(".", "")))
++
++
++def speakable(text: str, locale: str = EN) -> str:
+     """Rewrite codes, dates and currency into forms TTS pronounces; meaning is unchanged."""
+     spoken = _POLICY_IDS.sub("", text)
+     spoken = _SKU_PAREN.sub("", spoken)
++    if locale == VI:
++        spoken = _VI_ISO_DATE.sub(lambda m: _vi_date(m[1], m[2], m[3]) or m[0], spoken)
++        spoken = _VI_DMY_DATE.sub(lambda m: _vi_date(m[3], m[2], m[1]) or m[0], spoken)
++        spoken = _DIGIT_GROUPS.sub(lambda m: " ".join(_VI_DIGITS[int(c)] for c in m[0] if c.isdigit()), spoken)
++        spoken = re.sub(r"(?<=\d)-inch\b", " inch", spoken)
++        spoken = _ORDER_CODE.sub(lambda m: "ô rờ đê " + " ".join(_VI_DIGITS[int(c)] for c in m[1]), spoken)
++        spoken = _VND_PER.sub(r"đồng mỗi \1", spoken)
++        spoken = _VND.sub("đồng", spoken)
++        spoken = _UNDERSCORE_CODE.sub(r"\1 \2", spoken)
++        for pattern, word in _VI_UNITS:
++            spoken = pattern.sub(word, spoken)
++        spoken = _VI_NUMBER.sub(_vi_number_token, spoken)
++        return re.sub(r"\s{2,}", " ", spoken).strip()
+     spoken = _ISO_DATE.sub(lambda m: _date(m[1], m[2], m[3]) or m[0], spoken)
+     spoken = _DMY_DATE.sub(lambda m: _date(m[3], m[2], m[1]) or m[0], spoken)
+     spoken = _ORDER_CODE.sub(lambda m: "O R D " + " ".join(_DIGIT_WORDS[int(c)] for c in m[1]), spoken)
+@@ -56,30 +147,50 @@
+ 
+ 
+ def first_sentence(text: str) -> str:
+-    return _SENTENCE_END.split(text.strip(), maxsplit=1)[0]
++    """Up to the first sentence end that is followed by a capitalised word (any script) or '('."""
++    stripped = text.strip()
++    for match in re.finditer(r"[.!?]\s+", stripped):
++        following = stripped[match.end() : match.end() + 1]
++        if following == "(" or following.isupper():
++            return stripped[: match.start() + 1]
++    return stripped
+ 
+ 
+-def concise_policy(evidence: Sequence[dict]) -> str:
++def concise_policy(evidence: Sequence[Mapping[str, object]], locale: str = EN) -> str:
+     """First sentence of the leading clause(s), verbatim, plus how many more and where to read them."""
+-    clauses = [str(item.get("content_en", "")).strip() for item in evidence]
++    from .render import clause_text
++
++    clauses = [clause_text(item, locale).strip() for item in evidence]
+     clauses = [clause for clause in clauses if clause]
+     spoken = [first_sentence(clause) for clause in clauses[:MAX_SPOKEN_POLICY_CLAUSES]]
+     extra = len(clauses) - len(spoken)
++    if locale == VI:
++        more = f" Còn {extra} điều khoản liên quan khác." if extra else ""
++        return f"Theo chính sách demo giả lập của VoxCom: {' '.join(spoken)}{more} {POLICY_SCREEN_POINTER_VI}"
+     more = ""
+     if extra:
+         more = " There is 1 more applicable clause." if extra == 1 else f" There are {extra} more applicable clauses."
+     return f"According to fictional VoxCom demo policy: {' '.join(spoken)}{more} {POLICY_SCREEN_POINTER}"
+ 
+ 
+-def spoken_reply(assistant_text: str, tool_outcomes: Sequence[ToolOutcome]) -> str:
++def spoken_reply(assistant_text: str, tool_outcomes: Sequence[ToolOutcome], locale: str = EN) -> str:
+     """What TTS should say for a turn: the voice rendering of the same tool outcomes."""
+     if tool_outcomes:
+         from .render import render_results
+ 
+-        text, _ = render_results(tool_outcomes, voice=True)
++        text, _ = render_results(tool_outcomes, voice=True, locale=locale)
+     else:
+         text = assistant_text
+-    return speakable(text or assistant_text)
++    return speakable(text or assistant_text, locale)
+ 
+ 
+-__all__ = ["MAX_SPOKEN_POLICY_CLAUSES", "POLICY_SCREEN_POINTER", "concise_policy", "speakable", "spoken_reply"]
++__all__ = [
++    "MAX_SPOKEN_POLICY_CLAUSES",
++    "POLICY_SCREEN_POINTER",
++    "POLICY_SCREEN_POINTER_VI",
++    "concise_policy",
++    "first_sentence",
++    "speakable",
++    "spoken_reply",
++    "vi_number",
++]
+--- a/src/voxcare/session/tools.py
++++ b/src/voxcare/session/tools.py
+@@ -54,7 +54,11 @@
+         "parameters": {
+             "type": "object",
+             "properties": {
+-                "query": {"type": "string", "minLength": 1},
++                "query": {
++                    "type": "string",
++                    "minLength": 1,
++                    "description": "The caller's policy question in English (translate it if they spoke Vietnamese).",
++                },
+                 "category": {"type": "string", "enum": list(POLICY_CATEGORIES)},
+                 "product_category": {
+                     "type": ["string", "null"],
+@@ -145,19 +149,28 @@
+ _UNIT_WORDS = {
+     "zero": 0, "oh": 0, "o": 0, "one": 1, "two": 2, "three": 3, "four": 4,
+     "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
++    # Vietnamese digits, including the spoken variants mốt/tư/lăm/bẩy
++    "không": 0, "một": 1, "mốt": 1, "hai": 2, "ba": 3, "bốn": 4, "tư": 4,
++    "năm": 5, "lăm": 5, "sáu": 6, "bảy": 7, "bẩy": 7, "tám": 8, "chín": 9,
+ }  # fmt: skip
+ _TEEN_WORDS = {
+     "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+     "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
++    "mười": 10,
+ }  # fmt: skip
+ _TENS_WORDS = {"twenty": 2, "thirty": 3, "forty": 4, "fifty": 5, "sixty": 6, "seventy": 7, "eighty": 8, "ninety": 9}
+-# "o r d", "ord", and the small-model mishearings "or d" / "or rd" / "o rd" / "oh are dee";
+-# or the word "order" (optionally "number"/"code") directly followed by four spoken digits.
++# The letters of "ORD" as spoken or misheard: "o r d", "ord", "or d" / "or rd" / "o rd",
++# "oh are dee", and Vietnamese "ô rờ đê" / "o rờ đờ"; or a word for "order" that is kept
++# ("order", "order number", "đơn hàng", "mã đơn", "đơn số") directly followed by four spoken digits.
+ _SPOKEN_CODE_PREFIX = re.compile(
+-    r"\b(?:(?P<order>order(?:\s+(?:number|code))?)|o\s*r\s*d|or\s+r?d|o\s+rd|(?:o|oh)\s+(?:r|are|ar)\s+(?:d|dee))(?![a-z])",
++    r"\b(?:"
++    r"(?P<order>order(?:\s+(?:number|code))?|(?:mã\s+)?đơn(?:\s+hàng)?(?:\s+(?:số|là))*)"
++    r"|o\s*r\s*d|or\s+r?d|o\s+rd|(?:o|oh)\s+(?:r|are|ar)\s+(?:d|dee)"
++    r"|[oô]\s*(?:rờ|r)\s*(?:đê|đờ|đ|d)"
++    r")(?![^\W\d_])",
+     re.IGNORECASE,
+ )
+-_SPOKEN_TOKEN = re.compile(r"[\s,.-]*([a-z]+|[0-9]+)", re.IGNORECASE)
++_SPOKEN_TOKEN = re.compile(r"[\s,.-]*([^\W\d_]+|\d+)")
+ 
+ 
+ def _is_number_token(token: str) -> bool:
+--- a/src/voxcare/turns/prompts.py
++++ b/src/voxcare/turns/prompts.py
+@@ -18,7 +18,7 @@
+ from .controller import TurnInput
+ 
+ CONVERSATION_SETTING = (
+-    "A natural English voice conversation between a caller and a customer-support assistant. "
++    "A natural voice conversation, in Vietnamese or English, between a caller and a customer-support assistant. "
+     "The caller may answer a question briefly, pause while thinking, correct themselves, or "
+     "continue after a pause. The assistant should answer only after the caller has handed over. "
+     "The caller may be in a room with other people, on speaker, or near a TV."
+@@ -29,7 +29,8 @@
+     "not a final transcript. Capitalisation and punctuation are inserted automatically: a "
+     "trailing period or question mark appears whenever the recognizer closes a segment and is "
+     "NOT evidence the caller finished. Short partials are low confidence and are often revised "
+-    "or extended on the next update ('Yeah' → 'Yeah, so'). Fillers (um, uh, so, okay), repeated "
++    "or extended on the next update ('Yeah' → 'Yeah, so'). Fillers (um, uh, so, okay; in Vietnamese "
++    "ừm, ờ, à, thì, kiểu như), repeated "
+     "words and self-corrections are normal spoken behaviour, not signs the caller is done. "
+     "Word errors happen — judge the intent, not the exact wording."
+ )
+@@ -105,8 +106,9 @@
+ HOLDING_FLOOR_CRITERIA = {
+     "true": (
+         "The LATEST words are a request for time or deliberation: hedges, transcribed fillers "
+-        "('hmm', 'um', 'uh'), 'let me think', 'one sec', 'hold on', or a bare acknowledgement "
+-        "('yeah', 'okay', 'right') that reads as a lead-in to more, with nothing after it that "
++        "('hmm', 'um', 'uh'; Vietnamese 'ừm', 'ờ', 'à'), 'let me think' ('để tôi nghĩ đã'), 'one sec' "
++        "('chờ chút'), 'hold on' ('khoan đã'), or a bare acknowledgement ('yeah', 'okay', 'right'; "
++        "'ừ', 'vâng', 'dạ') that reads as a lead-in to more, with nothing after it that "
+         "hands over."
+     ),
+     "false": (
+@@ -153,10 +155,12 @@
+     "current_user_transcript. From TEXT only, decide whether the caller is genuinely trying "
+     "to take the floor — so the assistant should stop talking right now — or merely reacting "
+     "while continuing to listen. Backchannels and acknowledgements ('yeah', 'uh-huh', 'mm-hm', "
+-    "'right', 'okay', 'I see', 'got it', 'sure', 'nice', 'wow', laughter rendered as 'haha') "
++    "'right', 'okay', 'I see', 'got it', 'sure', 'nice', 'wow', laughter rendered as 'haha'; "
++    "Vietnamese 'ừ', 'ừm', 'dạ', 'vâng', 'à', 'ok', 'thế à') "
+     "are NOT interruptions. Neither is a fragment that echoes what the assistant just said "
+     "(residual echo of its own voice) or a single ambiguous word. Real interruptions: 'wait', "
+-    "'stop', 'hold on', 'no no', 'actually', 'sorry but', a new question, a correction, a "
++    "'stop', 'hold on', 'no no', 'actually', 'sorry but' (Vietnamese 'khoan', 'dừng lại', "
++    "'không không', 'thật ra', 'xin lỗi nhưng'), a new question, a correction, a "
+     "request to repeat or slow down, or several words of new content that do not track the "
+     "assistant's speech. "
+     "IMPORTANT exception: if the assistant asked the caller something — in "
+--- a/src/voxcare/voice/connection.py
++++ b/src/voxcare/voice/connection.py
+@@ -18,8 +18,9 @@
+ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+ 
+ from ..config import ConfigError, config_error_code, load_turn_settings, turn_mode_from_env
++from ..locales import EN
+ from ..providers import ProviderUnavailable, asr_connection_from_env, provider_status, tts_from_env
+-from ..session.render import HANDOFF_TEXT
++from ..session.render import handoff_text
+ from ..turns import TurnInput
+ from . import protocol as vm
+ from .asr_events import handle_asr_events
+@@ -48,6 +49,7 @@
+         self.websocket = websocket
+         self.state = VoiceState()
+         self.send_lock = asyncio.Lock()
++        self.locale = EN  # the session's language, read at the hello
+ 
+     async def send_json(self, payload: dict) -> None:  # type: ignore[type-arg]
+         async with self.send_lock:
+@@ -92,11 +94,12 @@
+             # Session creation rejects bad config, but the env can change under a live process.
+             state.turn_mode, config_error = turn_mode_from_env(), config_error_code(exc)
+         session = await self.boundary.get_session(self.session_id)
++        self.locale = session.locale if session is not None else EN
+         await self.send_json(
+             {
+                 "type": vm.SERVER_SESSION,
+                 "session": session_payload(session),
+-                "providers": provider_payload(),
++                "providers": provider_payload(self.locale),
+                 "protocol": vm.PROTOCOL_VERSION,
+                 "barge_in": state.barge_in,
+             }
+@@ -154,7 +157,7 @@
+             await self.boundary.record_observation(self.session_id, "client_clock", clock=state.client_clock)
+         if state.asr is None:
+             try:
+-                asr = asr_connection_from_env()
++                asr = asr_connection_from_env(self.locale)
+                 await asr.connect()
+             except ProviderUnavailable as exc:
+                 await self.send_json(
+@@ -174,7 +177,7 @@
+                 return False
+             state.asr = asr
+             try:
+-                state.tts = tts_from_env()
++                state.tts = tts_from_env(self.locale)
+             except ProviderUnavailable:
+                 state.tts = None
+             else:
+@@ -183,7 +186,11 @@
+                 handle_asr_events(self.boundary, self.send_json, self.session_id, state, asr, self.evaluate)
+             )
+         await self.send_json(
+-            {"type": vm.SERVER_VOICE_STARTED, "provider": provider_status()["asr"].name, "locale": "en-US"}
++            {
++                "type": vm.SERVER_VOICE_STARTED,
++                "provider": provider_status(self.locale)["asr"].name,
++                "locale": self.locale,
++            }
+         )
+         return True
+ 
+@@ -351,7 +358,7 @@
+                 turn_id=state.current_turn_id,
+                 turn_epoch=epoch,
+             )
+-            await self.send_json({"type": vm.SERVER_HANDOFF_RECORDED, "message": HANDOFF_TEXT})
++            await self.send_json({"type": vm.SERVER_HANDOFF_RECORDED, "message": handoff_text(self.locale)})
+ 
+     async def on_playback_started(self, control: dict) -> None:  # type: ignore[type-arg]
+         state = self.state
+--- a/src/voxcare/voice/dispatch.py
++++ b/src/voxcare/voice/dispatch.py
+@@ -13,6 +13,7 @@
+ import uuid
+ from dataclasses import asdict
+ 
++from ..locales import EN
+ from ..session.speech import spoken_reply
+ from . import protocol as vm
+ from .state import VoiceState, monotonic_ms
+@@ -103,7 +104,9 @@
+         await boundary.record_observation(session_id, "tts_unavailable", turn_id=result.turn_id)
+         return
+     # The screen shows the full grounded text; TTS gets the voice rendering of the same tool outcomes.
+-    spoken = spoken_reply(result.assistant_text, result.tool_outcomes)
++    session = await boundary.get_session(session_id)
++    locale = session.locale if session is not None else EN
++    spoken = spoken_reply(result.assistant_text, result.tool_outcomes, locale)
+     await _speak(boundary, send_json, send_binary, session_id, state, result.turn_id, spoken)
+ 
+ 
+--- a/static/app.js
++++ b/static/app.js
+@@ -20,6 +20,9 @@
+ } from './voice-protocol.js';
+ import { attachCapture, micErrorMessage, grantedConstraints } from './mic-capture-node.js';
+ import { createResampler, createPcmBatcher, decodePcm16 } from './audio-format.js';
++import {
++  clauseText, loadLocale, providersForLocale, resolveLocale, saveLocale, sessionRequestInit, strings,
++} from './i18n.js';
+ 
+ const $ = (id) => document.getElementById(id);
+ const ui = {
+@@ -31,6 +34,8 @@
+   supportStatus: $('support-status'),
+   trace: $('trace-list'), ttfa: $('ttfa-value'), playback: $('playback-state'),
+   settings: $('vad-settings'), settingsToggle: $('vad-settings-toggle'),
++  language: $('language-select'), languageLabel: $('language-label'), introEyebrow: $('intro-eyebrow'),
++  introTitle: $('intro-title'), introBody: $('intro-body'), limits: $('limits-line'),
+ };
+ 
+ const PLAYBACK_ECHO_TAIL_MS = 600;
+@@ -40,6 +45,13 @@
+ 
+ let session = null;
+ let config = null;
++// The caller's language: picked in the header, remembered per browser, sent on every session create/reset.
++function safeStorage() {
++  try { return globalThis.localStorage ?? null; } catch { return null; }
++}
++let locale = loadLocale(safeStorage());
++const t = () => strings(locale);
++const currentProviders = () => providersForLocale(config, locale);
+ let socket = null;
+ let mediaStream = null;
+ let audioContext = null;
+@@ -232,18 +244,16 @@
+   const missing = availability.missing.join(', ');
+   ui.mic.disabled = !availability.available || mic.transitioning;
+   if (!availability.available) {
+-    ui.micLabel.textContent = availability.label;
++    ui.micLabel.textContent = t().micUnavailable;
+     ui.micHelp.textContent = availability.help;
+     ui.form.querySelector('button[type="submit"]').disabled = !providers.conversation?.configured;
+-    if (!providers.conversation?.configured) ui.input.placeholder = 'Conversation provider not configured';
++    ui.input.placeholder = providers.conversation?.configured ? t().inputPlaceholder : 'Conversation provider not configured';
+     showError(`Live microphone flow is unavailable until these direct providers are configured: ${missing}. No simulated answer will be shown.`, 'configuration');
+   } else {
+-    ui.micLabel.textContent = isRecording ? 'Listening…' : 'Start speaking';
+-    ui.micHelp.textContent = isRecording
+-      ? 'Speak naturally. Silence is observed, never treated as an automatic end of turn.'
+-      : availability.help;
++    ui.micLabel.textContent = isRecording ? t().micListening : t().micStart;
++    ui.micHelp.textContent = isRecording ? t().micHelpListening : t().micHelpIdle;
+     ui.form.querySelector('button[type="submit"]').disabled = !providers.conversation?.configured;
+-    if (providers.conversation?.configured) ui.input.placeholder = 'Try: Where is order ORD-1002?';
++    if (providers.conversation?.configured) ui.input.placeholder = t().inputPlaceholder;
+     if (ui.error.dataset.kind === 'configuration') clearError();
+   }
+ }
+@@ -266,7 +276,7 @@
+       const category = document.createElement('span');
+       category.textContent = `${item.category || 'Policy'}${item.applicability_rules ? ` · applies under ${JSON.stringify(item.applicability_rules)}` : ''}`;
+       const content = document.createElement('p');
+-      content.textContent = item.content_en || item.title || '';
++      content.textContent = clauseText(item, locale);
+       article.append(heading, category, content);
+       ui.evidence.append(article);
+     }
+@@ -470,7 +480,7 @@
+         addTrace('Handoff request recorded', effect.reason || 'No live transfer occurred');
+         break;
+       case 'retry-ready':
+-        ui.transcript.textContent = 'Your transcript will appear here.';
++        ui.transcript.textContent = t().transcriptPlaceholder;
+         ui.transcript.classList.add('placeholder');
+         ui.actions.hidden = true;
+         setState('Retry ready', isRecording);
+@@ -643,8 +653,8 @@
+   setState('Listening', true);
+   ui.mic.classList.add('recording');
+   ui.mic.setAttribute('aria-label', 'Stop microphone capture');
+-  ui.micLabel.textContent = 'Listening…';
+-  ui.micHelp.textContent = 'Speak naturally. Pause is observed, not used to automatically finish your turn.';
++  ui.micLabel.textContent = t().micListening;
++  ui.micHelp.textContent = t().micHelpListening;
+   attachAudioProcessor(capturedGeneration, capturedSessionId).catch((error) => {
+     // A throw here must surface — never leave "Listening" with no audio.
+     if (!currentGuard(capturedGeneration, capturedSessionId)) return;
+@@ -814,7 +824,7 @@
+     if (!isTokenCurrent(mic, token) || !currentGuard(capturedGeneration, capturedSessionId)) {
+       stream.getTracks().forEach((track) => track.stop());
+       abortTransition(mic, token);
+-      renderProviders(config?.providers || {});
++      renderProviders(currentProviders());
+       return;
+     }
+     const granted = grantedConstraints(stream);
+@@ -827,7 +837,7 @@
+       if (context.state !== 'closed') await context.close().catch(() => {});
+       if (mediaStream) { mediaStream.getTracks().forEach((track) => track.stop()); mediaStream = null; }
+       abortTransition(mic, token);
+-      renderProviders(config?.providers || {});
++      renderProviders(currentProviders());
+       return;
+     }
+     audioContext = context;
+@@ -837,12 +847,12 @@
+     else socket.send(JSON.stringify(startMessage(capturedSessionId, { resolutionMs: measureClockResolution() })));
+     if (!isTokenCurrent(mic, token) || !currentGuard(capturedGeneration, capturedSessionId) || !socket || socket.readyState !== WebSocket.OPEN) {
+       abortTransition(mic, token);
+-      renderProviders(config?.providers || {});
++      renderProviders(currentProviders());
+       return;
+     }
+     if (!finishStart(mic, token)) return; // superseded — stop owns the UI now
+     isRecording = true;
+-    renderProviders(config?.providers || {});
++    renderProviders(currentProviders());
+   } catch (error) {
+     if (stream) stream.getTracks().forEach((track) => track.stop());
+     if (context && context.state !== 'closed') await context.close().catch(() => {});
+@@ -855,7 +865,7 @@
+     }
+   } finally {
+     if (isTokenCurrent(mic, token) && mic.transitioning) abortTransition(mic, token);
+-    renderProviders(config?.providers || {});
++    renderProviders(currentProviders());
+   }
+ }
+ 
+@@ -864,7 +874,7 @@
+   asrRunning = false;
+   ui.mic.classList.remove('recording');
+   ui.mic.setAttribute('aria-label', 'Start microphone');
+-  ui.micLabel.textContent = 'Start speaking';
++  ui.micLabel.textContent = t().micStart;
+   if (captureHandle) {
+     try { captureHandle.disconnect(); } catch { /* already torn down */ }
+     captureHandle = null;
+@@ -882,10 +892,10 @@
+   // adopted a new context while this stop was awaiting close.
+   if (isTokenCurrent(mic, token)) audioContext = null;
+   if (ui.mic.disabled && !mic.transitioning) {
+-    renderProviders(config?.providers || {});
++    renderProviders(currentProviders());
+   } else {
+     ui.micHelp.textContent = 'Silence never finishes a turn automatically. Use the explicit turn controls when available.';
+-    ui.micLabel.textContent = 'Start speaking';
++    ui.micLabel.textContent = t().micStart;
+   }
+   setState('Microphone stopped');
+ }
+@@ -903,7 +913,7 @@
+   } finally {
+     if (isTokenCurrent(mic, token) && mic.transitioning) abortTransition(mic, token);
+     manualStop = false;
+-    renderProviders(config?.providers || {});
++    renderProviders(currentProviders());
+   }
+ }
+ 
+@@ -945,7 +955,7 @@
+ }
+ 
+ function clearConversation() {
+-  ui.transcript.textContent = 'Your transcript will appear here.';
++  ui.transcript.textContent = t().transcriptPlaceholder;
+   ui.transcript.classList.add('placeholder');
+   ui.answerCard.hidden = true;
+   ui.evidence.replaceChildren();
+@@ -962,7 +972,10 @@
+ }
+ 
+ async function resetSession() {
+-  if (resetSession.inFlight) return; // double-reset guard
++  if (resetSession.inFlight) {
++    resetSession.again = true; // e.g. the language changed mid-reset: reset once more afterwards
++    return;
++  }
+   resetSession.inFlight = true;
+   ui.reset.disabled = true;
+   generation += 1;
+@@ -990,8 +1003,8 @@
+   setState('Resetting session…');
+   try {
+     const response = previousSessionId
+-      ? await fetch(`/api/sessions/${encodeURIComponent(previousSessionId)}/reset`, { method: 'POST' })
+-      : await fetch('/api/sessions', { method: 'POST' });
++      ? await fetch(`/api/sessions/${encodeURIComponent(previousSessionId)}/reset`, sessionRequestInit(locale))
++      : await fetch('/api/sessions', sessionRequestInit(locale));
+     if (resetGeneration !== generation) return;
+     if (!response.ok) throw new Error('Could not reset the demo session.');
+     session = await response.json();
+@@ -1001,7 +1014,7 @@
+     ui.pill.className = 'pill online';
+     clearConversation();
+     setState('Ready');
+-    renderProviders(config?.providers || {});
++    renderProviders(currentProviders());
+     addTrace('Session reset', 'new session scope; previous callbacks invalidated');
+   } catch (error) {
+     if (resetGeneration !== generation) return;
+@@ -1012,9 +1025,40 @@
+     manualStop = false;
+     resetSession.inFlight = false;
+     ui.reset.disabled = false;
++    if (resetSession.again) {
++      resetSession.again = false;
++      resetSession();
++    }
+   }
+ }
+ 
++// --- language ---
++function applyLanguage() {
++  const text = t();
++  document.documentElement.lang = text.htmlLang;
++  if (ui.language) ui.language.value = locale;
++  if (ui.languageLabel) ui.languageLabel.textContent = text.languageLabel;
++  if (ui.introEyebrow) ui.introEyebrow.textContent = text.introEyebrow;
++  if (ui.introTitle) ui.introTitle.textContent = text.introTitle;
++  if (ui.introBody) ui.introBody.textContent = text.introBody;
++  if (ui.limits) ui.limits.textContent = text.limits;
++  ui.input.placeholder = text.inputPlaceholder;
++  ui.reset.textContent = text.reset;
++  ui.form.querySelector('button[type="submit"]').textContent = text.send;
++  if (ui.transcript.classList.contains('placeholder')) ui.transcript.textContent = text.transcriptPlaceholder;
++  if (config) renderProviders(currentProviders());
++}
++
++function changeLanguage(next) {
++  const chosen = resolveLocale(next);
++  if (chosen === locale) return;
++  locale = chosen;
++  saveLocale(safeStorage(), locale);
++  applyLanguage();
++  addTrace('Language changed', `${locale}; a new session starts in this language`);
++  resetSession(); // the old session is fenced; the new one speaks the chosen language
++}
++
+ async function requestSupport() {
+   if (!supportRequestEnabled(session)) {
+     ui.supportStatus.textContent = 'An active session is required before a support request can be recorded.';
+@@ -1058,7 +1102,7 @@
+   const initialGeneration = generation;
+   initializeAttempts += 1;
+   const attempt = initializeAttempts;
+-  Promise.all([fetch('/api/config'), fetch('/api/sessions', { method: 'POST' })])
++  Promise.all([fetch('/api/config'), fetch('/api/sessions', sessionRequestInit(locale))])
+     .then(async ([configResponse, sessionResponse]) => {
+       if (!configResponse.ok || !sessionResponse.ok) throw new Error('The demo server did not start correctly.');
+       const [nextConfig, nextSession] = await Promise.all([configResponse.json(), sessionResponse.json()]);
+@@ -1071,7 +1115,7 @@
+       ui.pill.textContent = 'Session active';
+       ui.pill.className = 'pill online';
+       ui.ttfa.textContent = ttfaLabel();
+-      renderProviders(config.providers);
++      renderProviders(currentProviders());
+       setState('Ready');
+     })
+     .catch((error) => {
+@@ -1105,5 +1149,7 @@
+     ui.settingsToggle.setAttribute('aria-expanded', String(!ui.settings.hidden));
+   });
+ }
++if (ui.language) ui.language.addEventListener('change', () => changeLanguage(ui.language.value));
+ buildVadSettings();
++applyLanguage();
+ initialize();
+--- a/static/index.html
++++ b/static/index.html
+@@ -1,5 +1,5 @@
+ <!doctype html>
+-<html lang="en">
++<html lang="vi">
+   <head>
+     <meta charset="utf-8" />
+     <meta name="viewport" content="width=device-width, initial-scale=1" />
+@@ -18,11 +18,16 @@
+ 
+       <section class="intro" aria-labelledby="intro-title">
+         <div>
+-          <p class="eyebrow">ENGLISH · READ ONLY</p>
+-          <h2 id="intro-title">How can I help you today?</h2>
+-          <p>Ask about an order or delivery (try ORD-1002), browse or compare TVs and washers, check the VOXCOM_500K voucher, or ask about shipping, installation, warranty and return policy. This fictional demo session is scoped to customer <strong>CUST-001</strong>.</p>
++          <p id="intro-eyebrow" class="eyebrow">TIẾNG VIỆT · CHỈ TRA CỨU</p>
++          <h2 id="intro-title">Tôi có thể giúp gì cho bạn hôm nay?</h2>
++          <p id="intro-body">Hỏi về đơn hàng hoặc giao hàng (thử ORD-1002), tìm hoặc so sánh TV và máy giặt, kiểm tra voucher VOXCOM_500K, hoặc hỏi về chính sách giao hàng, lắp đặt, bảo hành và đổi trả. Phiên demo giả lập này gắn với khách hàng CUST-001.</p>
++        </div>
++        <div class="intro-actions">
++          <label class="language-picker" for="language-select"><span id="language-label">Ngôn ngữ</span>
++            <select id="language-select"><option value="vi-VN">Tiếng Việt</option><option value="en-US">English</option></select>
++          </label>
++          <button id="reset-button" class="button secondary" type="button">Bắt đầu phiên mới</button>
+         </div>
+-        <button id="reset-button" class="button secondary" type="button">Reset session</button>
+       </section>
+ 
+       <section class="workspace" aria-label="Support conversation">
+@@ -30,9 +35,9 @@
+           <div class="section-heading"><div><p class="eyebrow">LIVE SESSION</p><h2>Conversation</h2></div><span id="conversation-state" class="state-dot">Ready</span></div>
+           <div class="voice-panel">
+             <button id="mic-button" class="mic-button" type="button" aria-label="Start microphone" disabled><span aria-hidden="true">●</span></button>
+-            <div><strong id="mic-label">Checking voice providers…</strong><p id="mic-help">Microphone audio is sent to the configured English speech service.</p></div>
++            <div><strong id="mic-label">Checking voice providers…</strong><p id="mic-help">Âm thanh micro được gửi tới dịch vụ nhận dạng giọng nói đã cấu hình.</p></div>
+           </div>
+-          <div id="transcript-box" class="transcript placeholder" aria-live="polite">Your transcript will appear here.</div>
++          <div id="transcript-box" class="transcript placeholder" aria-live="polite">Lời bạn nói sẽ hiện ở đây.</div>
+           <section id="recovery-actions" class="recovery-actions" aria-labelledby="recovery-title" hidden>
+             <div><p class="eyebrow">YOUR CHOICE</p><h3 id="recovery-title">How would you like to continue?</h3><p>Your transcript is preserved. Silence will not submit the turn or request support.</p></div>
+             <div class="action-row"><button id="finish-button" class="button primary" type="button" disabled>Finish this turn</button><button id="retry-button" class="button secondary" type="button" disabled>Try again</button></div>
+@@ -47,7 +52,7 @@
+           </section>
+           <form id="text-form" class="text-form">
+             <label for="message-input">Diagnostic text input</label>
+-            <div class="input-row"><input id="message-input" name="text" maxlength="2000" placeholder="Try: Where is order ORD-1002?" autocomplete="off" /><button class="button primary" type="submit">Send</button></div>
++            <div class="input-row"><input id="message-input" name="text" maxlength="2000" placeholder="Thử: Đơn hàng ORD-1002 đang ở đâu?" autocomplete="off" /><button class="button primary" type="submit">Send</button></div>
+             <p class="muted small">This helps verify the same session boundary. It does not replace the microphone demo.</p>
+           </form>
+           <div id="answer-card" class="answer-card" hidden><p class="eyebrow">VOXCARE RESPONSE</p><p id="answer-text"></p><div id="evidence-list" class="evidence-list"></div></div>
+@@ -58,7 +63,7 @@
+         <aside class="side-column">
+           <section class="side-card"><p class="eyebrow">SESSION SCOPE</p><h2>Fictional customer</h2><p class="customer-id">CUST-001</p><p id="session-id" class="muted mono">Creating session…</p><p class="notice">Read-only demo. Order and delivery records cannot be changed.</p></section>
+           <section class="side-card"><p class="eyebrow">VOICE PIPELINE</p><h2>Provider status</h2><ul id="provider-list" class="provider-list"><li class="muted">Loading configuration…</li></ul></section>
+-          <section class="side-card limitations"><p class="eyebrow">DEMO LIMITS</p><p>English only · Simulated identity · No live agent transfer</p><p>No latency or accuracy benchmark has been measured. Policy clauses, when shown, are fictional demo evidence.</p></section>
++          <section class="side-card limitations"><p class="eyebrow">DEMO LIMITS</p><p id="limits-line">Tiếng Việt và tiếng Anh · Danh tính giả lập · Không chuyển máy trực tiếp</p><p>No latency or accuracy benchmark has been measured. Policy clauses, when shown, are fictional demo evidence.</p></section>
+         </aside>
+       </section>
+       <footer><span>VoxCare AI · Prototype P1</span><span>Fictional data for demonstration</span></footer>
+--- a/static/styles.css
++++ b/static/styles.css
+@@ -6,3 +6,4 @@
+ @media(max-width:520px){.trace-heading{align-items:flex-start;flex-direction:column}.trace-list li{flex-direction:column;gap:3px}.trace-list li span{text-align:left}.action-row .button{flex:1}.support-row .input-row{align-items:stretch;flex-direction:column}}
+ .support-panel{display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,.9fr);gap:18px;align-items:center;margin-top:16px;padding:17px 19px;background:#f8fafc;border:1px solid #e4eaf1;border-radius:12px}.support-panel h3{font:700 14px Manrope,sans-serif;margin:0}.support-panel>div:first-child>p:not(.eyebrow){font-size:11px;line-height:1.5;color:#6d7d90;margin:6px 0 0}.support-row{margin:0}.support-row label{display:block;font-size:11px;font-weight:700;margin-bottom:7px}.support-status{font-size:11px;line-height:1.5;color:#315e4a;margin:7px 0 0;min-height:1em}.support-status:empty{display:none}@media(max-width:650px){.support-panel{grid-template-columns:1fr;gap:13px}}
+ .voice-settings{margin-top:16px;padding:13px 15px;background:#f8fafc;border:1px solid #e4eaf1;border-radius:12px}.tune-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}.tune-heading h3{font:700 14px Manrope,sans-serif;margin:0}.tune-panel{margin-top:10px;display:grid;gap:8px}.tune-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 10px;align-items:center;font-size:12px;color:#415062}.tune-row input[type="range"]{grid-column:1/-1;width:100%}
++.intro-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}.language-picker{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;color:#4d5e71}.language-picker select{padding:10px 12px;border:1px solid #dce4ec;border-radius:10px;background:#fff;font:700 13px inherit;color:#31465e;cursor:pointer}.language-picker select:focus-visible{outline:3px solid #98d7d2;outline-offset:2px}@media(max-width:480px){.intro-actions{justify-content:flex-start}}

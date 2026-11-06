@@ -1,0 +1,415 @@
+{
+  "embedding": "minilm",
+  "queries": 50,
+  "in_domain": 32,
+  "out_of_domain": 18,
+  "best_accuracy_threshold": {
+    "threshold": 0.3235,
+    "in_domain_grounded": "27/32",
+    "out_of_domain_refused": "15/18",
+    "accuracy": 0.84,
+    "top1_correct": "31/32",
+    "failures": [
+      {
+        "query": "Can I check the box for damage before paying the driver?",
+        "best": 0.1588,
+        "cited": [],
+        "expected": [
+          "POL-SHIP-002"
+        ]
+      },
+      {
+        "query": "Is installation free for my washing machine?",
+        "best": 0.3001,
+        "cited": [],
+        "expected": [
+          "POL-INST-001"
+        ]
+      },
+      {
+        "query": "Do you set up the TV stand for free?",
+        "best": 0.2375,
+        "cited": [],
+        "expected": [
+          "POL-INST-001"
+        ]
+      },
+      {
+        "query": "Will the technician connect the water hoses of my washer?",
+        "best": 0.2712,
+        "cited": [],
+        "expected": [
+          "POL-INST-001"
+        ]
+      },
+      {
+        "query": "Do I pay extra for longer copper pipes for my air conditioner?",
+        "best": 0.2864,
+        "cited": [],
+        "expected": [
+          "POL-INST-002"
+        ]
+      },
+      {
+        "query": "Do you offer extended warranty insurance plans for purchase?",
+        "best": 0.4208,
+        "cited": [
+          "POL-WAR-002",
+          "POL-WAR-003"
+        ],
+        "expected": []
+      },
+      {
+        "query": "Do you deliver to Cambodia?",
+        "best": 0.3757,
+        "cited": [
+          "POL-SHIP-001"
+        ],
+        "expected": []
+      },
+      {
+        "query": "What is your refund policy for concert tickets?",
+        "best": 0.4093,
+        "cited": [
+          "POL-RET-002"
+        ],
+        "expected": []
+      }
+    ]
+  },
+  "configured_default": {
+    "threshold": 0.32,
+    "in_domain_grounded": "27/32",
+    "out_of_domain_refused": "14/18",
+    "accuracy": 0.82,
+    "top1_correct": "31/32",
+    "failures": [
+      {
+        "query": "Can I check the box for damage before paying the driver?",
+        "best": 0.1588,
+        "cited": [],
+        "expected": [
+          "POL-SHIP-002"
+        ]
+      },
+      {
+        "query": "Is installation free for my washing machine?",
+        "best": 0.3001,
+        "cited": [],
+        "expected": [
+          "POL-INST-001"
+        ]
+      },
+      {
+        "query": "Do you set up the TV stand for free?",
+        "best": 0.2375,
+        "cited": [],
+        "expected": [
+          "POL-INST-001"
+        ]
+      },
+      {
+        "query": "Will the technician connect the water hoses of my washer?",
+        "best": 0.2712,
+        "cited": [],
+        "expected": [
+          "POL-INST-001"
+        ]
+      },
+      {
+        "query": "Do I pay extra for longer copper pipes for my air conditioner?",
+        "best": 0.2864,
+        "cited": [],
+        "expected": [
+          "POL-INST-002"
+        ]
+      },
+      {
+        "query": "Do you offer extended warranty insurance plans for purchase?",
+        "best": 0.4208,
+        "cited": [
+          "POL-WAR-002",
+          "POL-WAR-003",
+          "POL-WAR-001"
+        ],
+        "expected": []
+      },
+      {
+        "query": "Do you deliver to Cambodia?",
+        "best": 0.3757,
+        "cited": [
+          "POL-SHIP-001"
+        ],
+        "expected": []
+      },
+      {
+        "query": "What is your refund policy for concert tickets?",
+        "best": 0.4093,
+        "cited": [
+          "POL-RET-002"
+        ],
+        "expected": []
+      },
+      {
+        "query": "Can I get same-day delivery by drone?",
+        "best": 0.3234,
+        "cited": [
+          "POL-SHIP-001"
+        ],
+        "expected": []
+      }
+    ]
+  },
+  "design_threshold_0.70": {
+    "threshold": 0.7,
+    "in_domain_grounded": "3/32",
+    "out_of_domain_refused": "18/18",
+    "accuracy": 0.42,
+    "top1_correct": "31/32",
+    "failures": [
+      {
+        "query": "What is the warranty period for a Samsung refrigerator compressor and can I return it if it has a manufacturing defect?",
+        "best": 0.6709,
+        "cited": [],
+        "expected": [
+          "POL-WAR-001",
+          "POL-RET-001"
+        ]
+      },
+      {
+        "query": "What is the return window for my TV?",
+        "best": 0.3311,
+        "cited": [],
+        "expected": [
+          "POL-RET-001"
+        ]
+      },
+      {
+        "query": "Can I return a defective washing machine?",
+        "best": 0.3674,
+        "cited": [],
+        "expected": [
+          "POL-RET-001"
+        ]
+      },
+      {
+        "query": "How many days do I have to get a replacement for a faulty product?",
+        "best": 0.6601,
+        "cited": [],
+        "expected": [
+          "POL-RET-001"
+        ]
+      },
+      {
+        "query": "Who pays the return shipping if I change my mind?",
+        "best": 0.4761,
+        "cited": [],
+        "expected": [
+          "POL-RET-002"
+        ]
+      },
+      {
+        "query": "Is there a restocking fee for returning an unopened item?",
+        "best": 0.4802,
+        "cited": [],
+        "expected": [
+          "POL-RET-002"
+        ]
+      },
+      {
+        "query": "You delivered the wrong model, who pays to send it back?",
+        "best": 0.4108,
+        "cited": [],
+        "expected": [
+          "POL-RET-002"
+        ]
+      },
+      {
+        "query": "Is delivery free?",
+        "best": 0.4271,
+        "cited": [],
+        "expected": [
+          "POL-SHIP-001"
+        ]
+      },
+      {
+        "query": "How much does delivery cost if I live 20 km from the warehouse?",
+        "best": 0.6073,
+        "cited": [],
+        "expected": [
+          "POL-SHIP-001"
+        ]
+      },
+      {
+        "query": "Do you charge extra for delivery outside the city?",
+        "best": 0.5012,
+        "cited": [],
+        "expected": [
+          "POL-SHIP-001"
+        ]
+      },
+      {
+        "query": "Is there a fee to carry a fridge up the stairs?",
+        "best": 0.5829,
+        "cited": [],
+        "expected": [
+          "POL-SHIP-002"
+        ]
+      },
+      {
+        "query": "Can I pay cash on delivery for a 25 million TV?",
+        "best": 0.3454,
+        "cited": [],
+        "expected": [
+          "POL-SHIP-002"
+        ]
+      },
+      {
+        "query": "Can I check the box for damage before paying the driver?",
+        "best": 0.1588,
+        "cited": [],
+        "expected": [
+          "POL-SHIP-002"
+        ]
+      },
+      {
+        "query": "Is installation free for my washing machine?",
+        "best": 0.3001,
+        "cited": [],
+        "expected": [
+          "POL-INST-001"
+        ]
+      },
+      {
+        "query": "Do you set up the TV stand for free?",
+        "best": 0.2375,
+        "cited": [],
+        "expected": [
+          "POL-INST-001"
+        ]
+      },
+      {
+        "query": "Will the technician connect the water hoses of my washer?",
+        "best": 0.2712,
+        "cited": [],
+        "expected": [
+          "POL-INST-001"
+        ]
+      },
+      {
+        "query": "How much does wall mounting a TV cost?",
+        "best": 0.4135,
+        "cited": [],
+        "expected": [
+          "POL-INST-002"
+        ]
+      },
+      {
+        "query": "Do I pay extra for longer copper pipes for my air conditioner?",
+        "best": 0.2864,
+        "cited": [],
+        "expected": [
+          "POL-INST-002"
+        ]
+      },
+      {
+        "query": "Will the installer tell me the price before drilling the wall?",
+        "best": 0.5715,
+        "cited": [],
+        "expected": [
+          "POL-INST-002"
+        ]
+      },
+      {
+        "query": "What is the warranty on a Samsung TV?",
+        "best": 0.6932,
+        "cited": [],
+        "expected": [
+          "POL-WAR-001"
+        ]
+      },
+      {
+        "query": "Does Samsung warranty cover a cracked screen?",
+        "best": 0.5797,
+        "cited": [],
+        "expected": [
+          "POL-WAR-001"
+        ]
+      },
+      {
+        "query": "What warranty does an LG washer have?",
+        "best": 0.6878,
+        "cited": [],
+        "expected": [
+          "POL-WAR-002"
+        ]
+      },
+      {
+        "query": "How long is the LG direct drive motor covered?",
+        "best": 0.4937,
+        "cited": [],
+        "expected": [
+          "POL-WAR-002"
+        ]
+      },
+      {
+        "query": "How long do I have to return a TV that stopped working?",
+        "best": 0.4054,
+        "cited": [],
+        "expected": [
+          "POL-RET-001"
+        ]
+      },
+      {
+        "query": "Is there a free delivery for orders over 500,000 dong?",
+        "best": 0.4622,
+        "cited": [],
+        "expected": [
+          "POL-SHIP-001"
+        ]
+      },
+      {
+        "query": "Will two people deliver my large fridge?",
+        "best": 0.3662,
+        "cited": [],
+        "expected": [
+          "POL-SHIP-002"
+        ]
+      },
+      {
+        "query": "Does LG cover the refrigerator compressor for ten years?",
+        "best": 0.6057,
+        "cited": [],
+        "expected": [
+          "POL-WAR-002"
+        ]
+      },
+      {
+        "query": "What does the Samsung warranty exclude?",
+        "best": 0.6516,
+        "cited": [],
+        "expected": [
+          "POL-WAR-001"
+        ]
+      },
+      {
+        "query": "Do you offer free TV installation on a table stand?",
+        "best": 0.3884,
+        "cited": [],
+        "expected": [
+          "POL-INST-001"
+        ]
+      }
+    ]
+  },
+  "scenario_checks_at_default": {
+    "scenario_4_cites_POL-WAR-001_and_POL-RET-001": true,
+    "scenario_4_scores": {
+      "POL-WAR-001": 0.6709,
+      "POL-RET-001": 0.3766,
+      "POL-RET-002": 0.3325
+    },
+    "scenario_5_refused": true,
+    "scenario_5_best_score": 0.2535
+  }
+}

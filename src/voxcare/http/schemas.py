@@ -14,4 +14,11 @@ class HandoffRequest(BaseModel):
     reason: str = Field(default="caller_requested_support", min_length=1, max_length=200)
 
 
-__all__ = ["HandoffRequest", "TextTurnRequest"]
+class SessionCreateRequest(BaseModel):
+    """``verified=false`` starts an unverified call (Scenario 2); a fixture id reuses a §17 session."""
+
+    verified: bool = True
+    fixture_session_id: str | None = Field(default=None, max_length=64)
+
+
+__all__ = ["HandoffRequest", "SessionCreateRequest", "TextTurnRequest"]

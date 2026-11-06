@@ -20,18 +20,95 @@ import {
 } from './voice-protocol.js';
 import { attachCapture, micErrorMessage, grantedConstraints } from './mic-capture-node.js';
 import { createResampler, createPcmBatcher, decodePcm16 } from './audio-format.js';
+import { createActivityView, renderActivity } from './activity-log.js';
 
 const $ = (id) => document.getElementById(id);
 const ui = {
   pill: $('session-pill'), state: $('conversation-state'), mic: $('mic-button'), micLabel: $('mic-label'),
   micHelp: $('mic-help'), transcript: $('transcript-box'), answerCard: $('answer-card'), answer: $('answer-text'),
   evidence: $('evidence-list'), error: $('error-banner'), providers: $('provider-list'), sessionId: $('session-id'),
+  identity: $('caller-identity'), customer: $('customer-id'),
   protocol: $('protocol-mode'), form: $('text-form'), input: $('message-input'), reset: $('reset-button'), actions: $('recovery-actions'),
   finish: $('finish-button'), retry: $('retry-button'), support: $('support-button'), supportReason: $('support-reason'),
   supportStatus: $('support-status'),
   trace: $('trace-list'), ttfa: $('ttfa-value'), playback: $('playback-state'),
+  activity: $('activity-list'), activityExport: $('activity-export'),
   settings: $('vad-settings'), settingsToggle: $('vad-settings-toggle'),
 };
+
+// --- session token (VoxCare-Session-Token, issued by POST /api/sessions) ---
+const TOKEN_REFRESH_MS = 20 * 60 * 1000;
+let tokenTimer = null;
+function authHeaders(extra = {}) {
+  return session?.token ? { ...extra, 'VoxCare-Session-Token': session.token } : { ...extra };
+}
+function adoptToken(token) {
+  if (session && typeof token === 'string' && token) session.token = token;
+}
+function renderIdentity() {
+  if (!ui.customer) return;
+  ui.customer.textContent = session?.customer_id || 'Not verified';
+  ui.customer.title = session?.customer_id
+    ? 'Verified by the simulated scope (OPD-04); production needs an OTP challenge.'
+    : 'Ask about an order: the assistant asks for the phone number used at checkout (demo: 0900 000 001).';
+  if (ui.identity && session) ui.identity.value = session.verified === false && !session.customer_id ? 'unverified' : ui.identity.value;
+}
+function scheduleTokenRefresh() {
+  if (tokenTimer) clearTimeout(tokenTimer);
+  const captured = session?.session_id;
+  tokenTimer = setTimeout(async () => {
+    if (!session || session.session_id !== captured) return;
+    try {
+      const response = await fetch(`/api/sessions/${encodeURIComponent(captured)}/token`, { method: 'POST', headers: authHeaders() });
+      if (response.ok && session?.session_id === captured) adoptToken((await response.json()).token);
+    } catch { /* the next REST call reports the failure */ }
+    scheduleTokenRefresh();
+  }, TOKEN_REFRESH_MS);
+}
+// --- session activity log (server-recorded, masked; GET /api/sessions/{id}/activity) ---
+let activityView = createActivityView();
+let activityTicket = 0;
+async function refreshActivity() {
+  if (!session?.session_id || !ui.activity) return;
+  const captured = session.session_id;
+  const ticket = ++activityTicket;
+  try {
+    const response = await fetch(`/api/sessions/${encodeURIComponent(captured)}/activity`, { headers: authHeaders() });
+    if (!response.ok || ticket !== activityTicket || session?.session_id !== captured) return;
+    const log = await response.json();
+    if (ticket !== activityTicket || session?.session_id !== captured) return;
+    renderActivity(ui.activity, log.entries || [], activityView);
+  } catch { /* the log refreshes with the next turn */ }
+}
+function resetActivity() {
+  activityView = createActivityView();
+  activityTicket += 1;
+  if (ui.activity) renderActivity(ui.activity, [], activityView);
+}
+async function downloadActivity(event) {
+  event.preventDefault();
+  if (!session?.session_id) return;
+  const captured = session.session_id;
+  try {
+    const response = await fetch(`/api/sessions/${encodeURIComponent(captured)}/activity?format=markdown`, { headers: authHeaders() });
+    if (!response.ok) throw new Error('download failed');
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `voxcare-activity-${captured}.md`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch {
+    showError('The activity log could not be downloaded. Retry after the next turn.');
+  }
+}
+
+function createSessionRequest() {
+  const verified = !ui.identity || ui.identity.value !== 'unverified';
+  return fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ verified }) });
+}
 
 const PLAYBACK_ECHO_TAIL_MS = 600;
 export const MIC_CONSTRAINTS = Object.freeze({
@@ -285,6 +362,7 @@ function renderEvidence(result) {
 
 function renderTurn(result) {
   if (!result) return;
+  refreshActivity();
   if (result.user_text) {
     ui.transcript.textContent = result.user_text;
     ui.transcript.classList.remove('placeholder');
@@ -305,6 +383,9 @@ function renderTurn(result) {
     INSUFFICIENT_EVIDENCE: 'No applicable policy evidence was available for this question.',
     NEEDS_CONTEXT: 'More product or brand details are needed before checking applicable policy information.',
     HANDOFF_REQUEST_RECORDED: 'Your request for support was recorded for this demo. No live agent transfer occurred.',
+    THROTTLED: 'Bulk catalog requests are limited (FR-SEC-01). No stock counts are disclosed.',
+    NEEDS_VERIFICATION: 'This caller is not verified yet. Say or type the phone number used at checkout (demo: 0900 000 001).',
+    WRITE_REQUEST_RECORDED: 'The request was recorded for VoxCom. Nothing was executed in this demo.',
   };
   if (messages[result.outcome]) showError(messages[result.outcome]);
   else if (result.outcome === 'STALE_DISCARDED') return;
@@ -443,6 +524,7 @@ function applyEffects(effects) {
         // reply was playing. Stop playback NOW (ghost guard: the
         // generation bump also drops in-flight binary), keep the mic open.
         stopPlayback();
+        refreshActivity();
         setState('Interrupted — listening');
         addTrace('Interrupted by caller', `${effect.reason || 'taking_floor'} · taking_floor=${effect.takingFloor ?? 'unknown'} · mic stays open`);
         break;
@@ -457,6 +539,7 @@ function applyEffects(effects) {
         setState('Choose how to continue', false);
         ui.micHelp.textContent = 'The turn is paused for your choice. Your microphone and transcript remain active.';
         addTrace('Recovery choices available', 'finish · retry · request support');
+        refreshActivity();
         break;
       case 'render-turn':
         renderTurn(effect.result);
@@ -468,6 +551,7 @@ function applyEffects(effects) {
         setState('Support request recorded');
         ui.actions.hidden = true;
         addTrace('Handoff request recorded', effect.reason || 'No live transfer occurred');
+        refreshActivity();
         break;
       case 'retry-ready':
         ui.transcript.textContent = 'Your transcript will appear here.';
@@ -663,7 +747,8 @@ function connectVoiceSocket(capturedGeneration, capturedSessionId) {
     const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     let ws;
     try {
-      ws = new WebSocket(`${wsProtocol}//${location.host}/ws/sessions/${encodeURIComponent(capturedSessionId)}`);
+      const token = session?.session_id === capturedSessionId && session?.token ? `?token=${encodeURIComponent(session.token)}` : '';
+      ws = new WebSocket(`${wsProtocol}//${location.host}/ws/sessions/${encodeURIComponent(capturedSessionId)}${token}`);
     } catch (error) {
       reject(error instanceof Error ? error : new Error('Speech connection failed.'));
       return;
@@ -908,29 +993,40 @@ async function stopMicrophone(notifyServer = true) {
 }
 
 // --- text + recovery + support ---
+// One typed turn at a time: the text stays in the box until the reply arrives, so a second Enter used to send
+// the same turn again and the first one was discarded as superseded (activity logs of 2026-11-04).
+let textTurnInFlight = false;
+
 async function sendText(event) {
   event.preventDefault();
   const text = ui.input.value.trim();
-  if (!text || !session) return;
+  if (!text || !session || textTurnInFlight) return;
   const submit = ui.form.querySelector('button[type="submit"]');
   if (submit?.disabled) return; // Enter must honour the disabled state
+  textTurnInFlight = true;
+  submit?.setAttribute('aria-busy', 'true');
   const capturedGeneration = generation;
   const capturedSessionId = session.session_id;
   clearError();
-  setState('Submitting diagnostic text…');
+  setState('Waiting for the reply…');
   try {
     const response = await fetch(`/api/sessions/${encodeURIComponent(capturedSessionId)}/turns`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, source: 'manual' }),
+      method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ text, source: 'manual' }),
     });
     const result = await response.json();
     if (!currentGuard(capturedGeneration, capturedSessionId)) return;
     if (!response.ok) throw new Error(result.detail || 'The request could not be completed.');
+    if (result.session_token) adoptToken(result.session_token);
+    if (result.binding_changed && session) { session.customer_id = result.customer_id; renderIdentity(); }
     ui.input.value = ''; // clear only after success
     renderTurn(result);
   } catch (error) {
     if (!currentGuard(capturedGeneration, capturedSessionId)) return;
     showError(error?.message || 'The request could not be completed.');
     setState('Unavailable');
+  } finally {
+    textTurnInFlight = false;
+    submit?.removeAttribute('aria-busy');
   }
 }
 
@@ -952,6 +1048,7 @@ function clearConversation() {
   ui.input.value = '';
   ui.actions.hidden = true;
   ui.trace.replaceChildren();
+  resetActivity();
   ui.playback.textContent = 'No browser playback observed';
   ui.ttfa.textContent = ttfaLabel();
   voice.currentTurnId = null;
@@ -989,12 +1086,16 @@ async function resetSession() {
   ui.supportStatus.textContent = '';
   setState('Resetting session…');
   try {
-    const response = previousSessionId
-      ? await fetch(`/api/sessions/${encodeURIComponent(previousSessionId)}/reset`, { method: 'POST' })
-      : await fetch('/api/sessions', { method: 'POST' });
+    // A new caller-identity choice opens a new session; otherwise the old one is reset in place.
+    const switching = Boolean(session && ui.identity && (ui.identity.value === 'unverified') !== (session.verified === false));
+    const response = previousSessionId && !switching
+      ? await fetch(`/api/sessions/${encodeURIComponent(previousSessionId)}/reset`, { method: 'POST', headers: authHeaders() })
+      : await createSessionRequest();
     if (resetGeneration !== generation) return;
     if (!response.ok) throw new Error('Could not reset the demo session.');
     session = await response.json();
+    renderIdentity();
+    scheduleTokenRefresh();
     ui.support.disabled = !supportRequestEnabled(session);
     ui.sessionId.textContent = session.session_id;
     ui.pill.textContent = 'Session active';
@@ -1003,6 +1104,7 @@ async function resetSession() {
     setState('Ready');
     renderProviders(config?.providers || {});
     addTrace('Session reset', 'new session scope; previous callbacks invalidated');
+    refreshActivity();
   } catch (error) {
     if (resetGeneration !== generation) return;
     ui.support.disabled = !supportRequestEnabled(session);
@@ -1036,6 +1138,7 @@ async function requestSupport() {
     const response = await submitSupportRequest({
       fetchImpl: fetch,
       sessionId: capturedSessionId,
+      token: session?.token,
       reason: handoffRequestPayload(voice, ui.supportReason.value).reason,
       isCurrent: () => currentGuard(capturedGeneration, capturedSessionId),
     });
@@ -1043,7 +1146,8 @@ async function requestSupport() {
     const result = response.result;
     ui.supportStatus.textContent = result.message || 'Your support request was recorded for this demo. No live transfer or agent assignment occurred.';
     setState('Support request recorded');
-    addTrace('Support request recorded', result.request_id || 'session request; no live transfer or agent assignment');
+    addTrace('Support request recorded', result.ticket_number || result.request_id || 'session request; no live transfer or agent assignment');
+    refreshActivity();
   } catch (error) {
     if (!currentGuard(capturedGeneration, capturedSessionId)) return;
     ui.supportStatus.textContent = error?.message || 'The support request could not be recorded. Please retry.';
@@ -1058,7 +1162,7 @@ function initialize() {
   const initialGeneration = generation;
   initializeAttempts += 1;
   const attempt = initializeAttempts;
-  Promise.all([fetch('/api/config'), fetch('/api/sessions', { method: 'POST' })])
+  Promise.all([fetch('/api/config'), createSessionRequest()])
     .then(async ([configResponse, sessionResponse]) => {
       if (!configResponse.ok || !sessionResponse.ok) throw new Error('The demo server did not start correctly.');
       const [nextConfig, nextSession] = await Promise.all([configResponse.json(), sessionResponse.json()]);
@@ -1066,6 +1170,8 @@ function initialize() {
       config = nextConfig;
       session = nextSession;
       initializeAttempts = 0;
+      renderIdentity();
+      scheduleTokenRefresh();
       ui.support.disabled = !supportRequestEnabled(session);
       ui.sessionId.textContent = session.session_id;
       ui.pill.textContent = 'Session active';
@@ -1073,6 +1179,7 @@ function initialize() {
       ui.ttfa.textContent = ttfaLabel();
       renderProviders(config.providers);
       setState('Ready');
+      refreshActivity();
     })
     .catch((error) => {
       if (initialGeneration !== generation) return;
@@ -1096,9 +1203,11 @@ ui.mic.addEventListener('click', () => {
 });
 ui.form.addEventListener('submit', sendText);
 ui.reset.addEventListener('click', resetSession);
+if (ui.identity) ui.identity.addEventListener('change', resetSession);
 ui.finish.addEventListener('click', () => sendRecoveryAction('manual_finish'));
 ui.retry.addEventListener('click', () => sendRecoveryAction('caller_retry'));
 ui.support.addEventListener('click', requestSupport);
+if (ui.activityExport) ui.activityExport.addEventListener('click', downloadActivity);
 if (ui.settingsToggle && ui.settings) {
   ui.settingsToggle.addEventListener('click', () => {
     ui.settings.hidden = !ui.settings.hidden;

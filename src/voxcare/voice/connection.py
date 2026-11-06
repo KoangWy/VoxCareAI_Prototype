@@ -18,8 +18,9 @@ import os
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from ..config import ConfigError, config_error_code, load_turn_settings, turn_mode_from_env
+from ..observability.otel import tracer
 from ..providers import ProviderUnavailable, asr_connection_from_env, provider_status, tts_from_env
-from ..session.render import HANDOFF_TEXT
+from ..security.tokens import InvalidToken
 from ..turns import TurnInput
 from . import protocol as vm
 from .asr_events import handle_asr_events
@@ -219,6 +220,7 @@ class VoiceConnection:
                 agent_speaking=True,
             )
         else:
+            was_speaking = bool(state.assistant_speech_text) or control.get("agent_speaking") is True
             state.response_generation += 1
             for task in tuple(state.response_tasks):
                 task.cancel()
@@ -226,6 +228,8 @@ class VoiceConnection:
             state.retire_audio()
             state.pending_recovery = False
             state.asr_final = False
+            if was_speaking:  # barge-in (guide §10.3): stale epoch out, paused topic for the resume question
+                await self.boundary.note_barge_in(self.session_id, interrupted_epoch=control.get("interrupted_epoch"))
         if state.turn_completed:
             # The previous turn is done; this onset opens a fresh one.
             state.reset_turn_buffers(new_turn_id=True)
@@ -344,14 +348,22 @@ class VoiceConnection:
                 }
             )
         else:
-            await self.boundary.record_handoff(
+            handoff = await self.boundary.record_handoff(
                 self.session_id,
                 reason=str(control.get("reason") or "caller_requested_handoff"),
                 context=state.transcript,
                 turn_id=state.current_turn_id,
                 turn_epoch=epoch,
             )
-            await self.send_json({"type": vm.SERVER_HANDOFF_RECORDED, "message": HANDOFF_TEXT})
+            message = (handoff or {}).get("message") or "Your request could not be recorded."
+            await self.send_json(
+                {
+                    "type": vm.SERVER_HANDOFF_RECORDED,
+                    "message": message,
+                    "ticket_number": (handoff or {}).get("ticket_number"),
+                    "activity": (handoff or {}).get("activity"),
+                }
+            )
 
     async def on_playback_started(self, control: dict) -> None:  # type: ignore[type-arg]
         state = self.state
@@ -379,6 +391,24 @@ class VoiceConnection:
             and float(t6) >= float(t0["client_monotonic_ms"])
         )
         ttfa = round(float(t6) - float(t0["client_monotonic_ms"]), 3) if same_clock else None  # type: ignore[arg-type]
+        with tracer().start_as_current_span(
+            "client_playback", attributes={"session_id": self.session_id, "turn_id": str(control.get("turn_id"))}
+        ) as span:  # T0 and T6 are read on the browser clock (guide §9.5)
+            if t0:
+                span.add_event("T0_client_vad_end", {"client_monotonic_ms": float(t0.get("client_monotonic_ms") or 0)})
+            if isinstance(t6, (int, float)):
+                span.add_event("T6_first_audible_frame", {"client_monotonic_ms": float(t6)})
+            if ttfa is not None:
+                span.set_attribute("ttfa_ms", ttfa)
+            # Guide §9.5 definition (T6 = first frame played, browser clock): reported separately because the
+            # browser's playback start is not an acoustic confirmation.
+            if (
+                isinstance(t6, (int, float))
+                and isinstance(t0.get("client_monotonic_ms"), (int, float))
+                and control.get("clock_name") == state.client_clock.get("name")
+                and float(t6) >= float(t0["client_monotonic_ms"])
+            ):
+                span.set_attribute("ttfa_playback_start_ms", round(float(t6) - float(t0["client_monotonic_ms"]), 3))
         await self.boundary.record_observation(
             self.session_id,
             "playback_started",
@@ -416,7 +446,10 @@ class VoiceConnection:
         await self.boundary.record_observation(self.session_id, "session_reset_requested")
         new_session = await self.boundary.reset_session(self.session_id)
         if new_session is not None:
-            await self.send_json({"type": vm.SERVER_SESSION_RESET, "session": session_payload(new_session)})
+            token = self.boundary.issue_token(new_session)
+            await self.send_json(
+                {"type": vm.SERVER_SESSION_RESET, "session": session_payload(new_session, token=token)}
+            )
 
     async def on_binary(self, frame: bytes) -> bool:
         """Forward one mic frame. Returns False when the socket must close."""
@@ -441,6 +474,9 @@ class VoiceConnection:
     async def dispatch(self, control: dict) -> bool:  # type: ignore[type-arg]
         """Handle one control message. Returns False when the socket loop must end."""
         kind = control.get("type")
+        if kind is None and control.get("event") == vm.CLIENT_BARGE_IN_TRIGGERED:
+            await self.on_vad_speech_start({**control, "agent_speaking": True, "segment_id": "barge-in"})
+            return True
         if kind == vm.CLIENT_START:
             return await self.on_start(control)
         if kind == vm.CLIENT_VAD_SPEECH_START:
@@ -463,7 +499,23 @@ class VoiceConnection:
         return True
 
 
-async def voice_socket(websocket: WebSocket, session_id: str, boundary) -> None:  # type: ignore[no-untyped-def]
+async def voice_socket(websocket: WebSocket, session_id: str | None, boundary) -> None:  # type: ignore[no-untyped-def]
+    """Reject the connection unless the ``VoxCare-Session-Token`` JWT verifies (guide §9.1)."""
+    token = websocket.query_params.get("token") or websocket.headers.get("voxcare-session-token")
+    try:
+        claims = await boundary.verify_token(token, session_id=session_id)
+    except InvalidToken:
+        if session_id is not None and await boundary.get_session(session_id) is None:
+            await websocket.close(code=4404, reason="session unavailable")
+        else:
+            await websocket.close(code=4401, reason="session token rejected")
+        return
+    if claims.probe:  # /healthz?wss=1: the handshake itself is the check
+        await websocket.accept()
+        await websocket.send_json({"type": vm.SERVER_SESSION, "probe": True})
+        await websocket.close(code=1000)
+        return
+    session_id = claims.session_id
     if await boundary.get_session(session_id) is None:
         await websocket.close(code=4404, reason="session unavailable")
         return
@@ -506,6 +558,11 @@ def register(app: FastAPI) -> None:
     @app.websocket("/ws/sessions/{session_id}")
     async def ws_sessions(websocket: WebSocket, session_id: str) -> None:
         await voice_socket(websocket, session_id, boundary)
+
+    @app.websocket("/ws/voice")
+    async def ws_voice(websocket: WebSocket) -> None:
+        """Guide §9.1 transport: ``wss://<backend>/ws/voice?token=<VoxCare-Session-Token>``."""
+        await voice_socket(websocket, None, boundary)
 
 
 __all__ = ["MAX_AUDIO_FRAME_BYTES", "MAX_SESSION_AUDIO_BYTES", "VoiceConnection", "register", "voice_socket"]

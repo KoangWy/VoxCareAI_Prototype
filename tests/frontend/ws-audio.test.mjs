@@ -67,6 +67,29 @@ test('resampler keeps the 16 kHz contract and attenuates alias content', () => {
   assert.deepEqual([...direct], [16384, -16384, 0]);
 });
 
+test('resampler keeps the speech band flat and removes content that would alias into it', () => {
+  // A weak anti-alias filter folds 8-24 kHz energy (sibilants, fan or coil whine) back into
+  // 0-8 kHz, where the recogniser listens; measured on Vosk, that raised word errors under hiss.
+  const levelDb = (inputRate, freq) => {
+    const samples = new Float32Array(inputRate / 2); // 0.5 s
+    for (let i = 0; i < samples.length; i += 1) samples[i] = 0.5 * Math.sin((2 * Math.PI * freq * i) / inputRate);
+    const pcm = createResampler(inputRate).process(samples);
+    let sum = 0;
+    for (let i = 800; i < pcm.length; i += 1) sum += (pcm[i] / 32768) ** 2; // skip the filter start-up
+    return 20 * Math.log10(Math.sqrt(sum / (pcm.length - 800)) / (0.5 / Math.SQRT2));
+  };
+  for (const inputRate of [48_000, 44_100]) {
+    for (const freq of [300, 1000, 3000, 6000]) {
+      const db = levelDb(inputRate, freq);
+      assert.ok(Math.abs(db) < 0.3, `${inputRate} Hz input, ${freq} Hz passband: ${db.toFixed(2)} dB`);
+    }
+    for (const freq of [9000, 12_000, 14_000, 18_000]) {
+      const db = levelDb(inputRate, freq);
+      assert.ok(db < -60, `${inputRate} Hz input, ${freq} Hz would alias: ${db.toFixed(1)} dB`);
+    }
+  }
+});
+
 test('PCM16 round-trips through the decoder', () => {
   const pcm = new Int16Array([0, 16384, -16384, 32767, -32768]);
   const decoded = decodePcm16(pcm.buffer);
@@ -108,4 +131,12 @@ test('pcm batcher emits fixed 20 ms frames and carries the remainder', () => {
   assert.ok(batches.every((batch) => batch.length === 320));
   assert.equal(batcher.push(new Int16Array(259)).length, 0); // 60 carried + 259 = 319
   assert.equal(batcher.push(new Int16Array(1)).length, 1);
+});
+
+test('default uplink batch is the design frame: 512 bytes = 16 ms at 16 kHz', () => {
+  const batcher = createPcmBatcher();
+  const batches = batcher.push(new Int16Array(1000));
+  assert.equal(batches.length, 3);
+  assert.equal(batches[0].byteLength, 512);
+  assert.equal((batches[0].length / TARGET_SAMPLE_RATE) * 1000, 16);
 });

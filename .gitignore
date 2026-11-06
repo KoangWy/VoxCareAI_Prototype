@@ -23,6 +23,9 @@ node_modules/
 # Downloaded demo models (scripts/fetch_demo_models.py)
 models/
 
+# Local stores: embedded PostgreSQL (data/pg) and the Chroma index (data/chroma)
+data/
+
 # Local run artifacts
 *.log
 observed-results*.jsonl

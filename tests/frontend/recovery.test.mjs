@@ -45,8 +45,21 @@ test('support request is enabled by an active session without provider or websoc
   });
   assert.equal(request.url, '/api/sessions/session-1/handoff');
   assert.equal(request.options.method, 'POST');
+  assert.equal(request.options.headers['VoxCare-Session-Token'], undefined);
   assert.deepEqual(JSON.parse(request.options.body), { reason: 'Need a person' });
   assert.equal(result.status, 'RECORDED');
+});
+
+test('support request carries the session token header', async () => {
+  let request;
+  await submitSupportRequest({
+    sessionId: 'session-2', token: 'jwt-abc', reason: 'x', isCurrent: () => true,
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return { ok: true, json: async () => ({ outcome: 'HANDOFF_REQUEST_RECORDED' }) };
+    },
+  });
+  assert.equal(request.options.headers['VoxCare-Session-Token'], 'jwt-abc');
 });
 
 test('support acknowledgement from the old session is discarded after reset', async () => {

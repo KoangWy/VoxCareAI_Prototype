@@ -18,13 +18,15 @@ from typing import Any
 from anthropic import AsyncAnthropic
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
 
-from ..contracts import MAX_TOOL_CALLS_PER_TURN, PlannedToolCall
+from ..contracts import MAX_TOOL_CALLS_PER_TURN, PlannedCalls, PlannedToolCall
 from .base import SYSTEM_PROMPT, ProviderUnavailable, chat_completions_tools, chat_messages, responses_tools
 
 logger = logging.getLogger("voxcare.providers")
 
 _REQUEST_TIMEOUT_S = 12.0
-_RESPONSES_MAX_OUTPUT_TOKENS = 250
+# Room for three tool calls plus any text the model writes first: at 250, a multi-tool plan was cut inside the
+# JSON arguments and arrived as tool calls with empty inputs.
+_RESPONSES_MAX_OUTPUT_TOKENS = 1024
 
 
 def _is_unsupported_parameter(exc: Exception, parameter: str) -> bool:
@@ -53,10 +55,12 @@ def _parse_arguments(raw: object) -> dict[str, Any]:
     return arguments
 
 
-def _capped(calls: list[PlannedToolCall]) -> list[PlannedToolCall]:
+def _capped(calls: list[PlannedToolCall], note: str = "") -> PlannedCalls:
     if len(calls) > MAX_TOOL_CALLS_PER_TURN:
         logger.info("parallel tool calls truncated", extra={"emitted": len(calls), "cap": MAX_TOOL_CALLS_PER_TURN})
-    return calls[:MAX_TOOL_CALLS_PER_TURN]
+    planned = PlannedCalls(calls[:MAX_TOOL_CALLS_PER_TURN])
+    planned.note = " ".join(note.split())[:500] or None
+    return planned
 
 
 class OpenAIResponsesAdapter:
@@ -80,7 +84,7 @@ class OpenAIResponsesAdapter:
             "reasoning": {"effort": "none"},
             "max_output_tokens": _RESPONSES_MAX_OUTPUT_TOKENS,
             "stream": True,
-            "parallel_tool_calls": False,
+            "parallel_tool_calls": True,  # Scenario 1 needs lookup + track, Scenario 7 three calls
         }
         try:
             stream = await self.client.responses.create(**payload)
@@ -90,14 +94,18 @@ class OpenAIResponsesAdapter:
             payload.pop("parallel_tool_calls")
             stream = await self.client.responses.create(**payload)
         calls: list[PlannedToolCall] = []
+        text: list[str] = []
         async for event in stream:
+            if getattr(event, "type", None) == "response.output_text.delta":
+                text.append(str(getattr(event, "delta", "") or ""))
+                continue
             if getattr(event, "type", None) != "response.output_item.done":
                 continue
             item = getattr(event, "item", None)
             if getattr(item, "type", None) != "function_call":
                 continue
             calls.append(PlannedToolCall(item.name, _parse_arguments(item.arguments), getattr(item, "call_id", "")))
-        return _capped(calls)
+        return _capped(calls, "".join(text))
 
 
 class OpenAIChatCompletionsAdapter:
@@ -130,13 +138,13 @@ class OpenAIChatCompletionsAdapter:
     async def plan_turn(
         self, *, user_text: str, history: Sequence[Mapping[str, str]], available_tools: Sequence[Mapping[str, object]]
     ) -> list[PlannedToolCall]:
-        """Sends ``parallel_tool_calls=False``; a gateway that rejects it gets the same request without it."""
+        """Sends ``parallel_tool_calls=True``; a gateway that rejects it gets the same request without it."""
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *chat_messages(user_text, history)],
             "tools": chat_completions_tools(available_tools),
             "tool_choice": "auto",
-            "parallel_tool_calls": False,
+            "parallel_tool_calls": True,  # Scenario 1 needs lookup + track, Scenario 7 three calls
             "max_tokens": self.max_tokens,
             "stream": True,
         }
@@ -150,9 +158,12 @@ class OpenAIChatCompletionsAdapter:
             payload.pop("parallel_tool_calls")
             stream = await self.client.chat.completions.create(**payload)
         pending: dict[int, dict[str, str]] = {}
+        text: list[str] = []
         async for event in stream:
             choices = getattr(event, "choices", None) or []
             delta = getattr(choices[0], "delta", None) if choices else None
+            if isinstance(getattr(delta, "content", None), str):
+                text.append(delta.content)
             for piece in getattr(delta, "tool_calls", None) or []:
                 entry = pending.setdefault(
                     int(getattr(piece, "index", 0) or 0), {"id": "", "name": "", "arguments": ""}
@@ -167,11 +178,12 @@ class OpenAIChatCompletionsAdapter:
             PlannedToolCall(entry["name"], _parse_arguments(entry["arguments"]), entry["id"])
             for _, entry in sorted(pending.items())
         ]
-        return _capped(calls)
+        return _capped(calls, "".join(text))
 
 
 class AnthropicMessagesAdapter:
-    """Sticky fallback transport: Anthropic Messages with one tool call per turn."""
+    """Anthropic Messages with one tool call per turn: the sticky fallback, or the primary model
+    when ``VOXCARE_CONVERSATION_PROVIDER=anthropic``."""
 
     label = "Anthropic Messages"
 
@@ -192,7 +204,8 @@ class AnthropicMessagesAdapter:
             system=SYSTEM_PROMPT,
             messages=chat_messages(user_text, history),
             tools=tools,
-            tool_choice={"type": "auto", "disable_parallel_tool_use": True},
+            # several tool_use blocks in one response (lookup + track, search + compare + voucher), capped at 3
+            tool_choice={"type": "auto", "disable_parallel_tool_use": False},
         ) as stream:
             response = await stream.get_final_message()
         calls = [
@@ -200,7 +213,10 @@ class AnthropicMessagesAdapter:
             for block in response.content
             if getattr(block, "type", None) == "tool_use"
         ]
-        return _capped(calls)
+        note = " ".join(str(block.text) for block in response.content if getattr(block, "type", None) == "text")
+        if getattr(response, "stop_reason", None) == "max_tokens":
+            note = f"{note} [output cut at the token limit]".strip()
+        return _capped(calls, note)
 
 
 class CascadeDialogueProvider:
@@ -208,11 +224,17 @@ class CascadeDialogueProvider:
 
     def __init__(
         self,
-        primary: OpenAIResponsesAdapter | OpenAIChatCompletionsAdapter,
+        primary: OpenAIResponsesAdapter | OpenAIChatCompletionsAdapter | AnthropicMessagesAdapter,
         fallback: AnthropicMessagesAdapter | None,
+        *,
+        primary_timeout_s: float | None = None,
     ) -> None:
         self.primary = primary
         self.fallback = fallback
+        # LLM_TTFT_TIMEOUT_MS (guide §3.2, §8.3): a primary slower than this is a qualifying SERVICE_TIMEOUT.
+        # The planner returns tool calls only, so the first complete plan stands in for the first token.
+        # Applied only when a fallback exists; without one a slow answer is still better than none.
+        self.primary_timeout_s = primary_timeout_s if fallback is not None else None
         self._fallback_active = False
         self._consecutive_retryable_failures = 0
         self._events: list[dict[str, str]] = []
@@ -231,7 +253,10 @@ class CascadeDialogueProvider:
                 raise ProviderUnavailable("fallback provider unavailable")
             return await self.fallback.plan_turn(**call)
         try:
-            result = await self.primary.plan_turn(**call)
+            if self.primary_timeout_s:
+                result = await asyncio.wait_for(self.primary.plan_turn(**call), timeout=self.primary_timeout_s)
+            else:
+                result = await self.primary.plan_turn(**call)
         except Exception as exc:
             if not self._is_retryable(exc):
                 raise
@@ -243,6 +268,8 @@ class CascadeDialogueProvider:
                 "event": "LLM_PROVIDER_FAILOVER",
                 "from_provider": getattr(self.primary, "label", "primary"),
                 "to_provider": getattr(self.fallback, "label", "fallback"),
+                "primary_model": str(getattr(self.primary, "model", "primary")),
+                "active_model": str(getattr(self.fallback, "model", "fallback")),
                 "failure_count": str(self._consecutive_retryable_failures),
             }
             self._events.append(event)

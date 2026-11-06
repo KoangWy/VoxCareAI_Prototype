@@ -362,10 +362,12 @@ export function supportRequestEnabled(session) {
   return Boolean(session && typeof session.session_id === 'string' && session.session_id.length > 0);
 }
 
-export async function submitSupportRequest({ fetchImpl, sessionId, reason, isCurrent }) {
+export async function submitSupportRequest({ fetchImpl, sessionId, token, reason, isCurrent }) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (token) headers['VoxCare-Session-Token'] = token;
   const response = await fetchImpl(`/api/sessions/${encodeURIComponent(sessionId)}/handoff`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ reason: String(reason || '').trim().slice(0, 200) }),
   });
   if (!isCurrent()) return { status: 'STALE_DISCARDED' };

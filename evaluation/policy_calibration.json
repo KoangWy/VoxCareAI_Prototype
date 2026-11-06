@@ -1,0 +1,320 @@
+{
+  "description": "Labeled policy queries for the G-10 threshold calibration: in-domain paraphrases (expected clause ids) and out-of-domain questions (expected []). Scenario 4 and 5 are the first two rows.",
+  "cases": [
+    {
+      "query": "What is the warranty period for a Samsung refrigerator compressor and can I return it if it has a manufacturing defect?",
+      "category": "ALL",
+      "expected": [
+        "POL-WAR-001",
+        "POL-RET-001"
+      ]
+    },
+    {
+      "query": "Do you accept trade-ins for 10-year-old microwave ovens with cash back?",
+      "category": "ALL",
+      "expected": []
+    },
+    {
+      "query": "What is the return window for my TV?",
+      "category": "RETURNS",
+      "expected": [
+        "POL-RET-001"
+      ]
+    },
+    {
+      "query": "Can I return a defective washing machine?",
+      "category": "RETURNS",
+      "expected": [
+        "POL-RET-001"
+      ]
+    },
+    {
+      "query": "How many days do I have to get a replacement for a faulty product?",
+      "category": "RETURNS",
+      "expected": [
+        "POL-RET-001"
+      ]
+    },
+    {
+      "query": "Who pays the return shipping if I change my mind?",
+      "category": "RETURNS",
+      "expected": [
+        "POL-RET-002"
+      ]
+    },
+    {
+      "query": "Is there a restocking fee for returning an unopened item?",
+      "category": "RETURNS",
+      "expected": [
+        "POL-RET-002"
+      ]
+    },
+    {
+      "query": "You delivered the wrong model, who pays to send it back?",
+      "category": "RETURNS",
+      "expected": [
+        "POL-RET-002"
+      ]
+    },
+    {
+      "query": "Is delivery free?",
+      "category": "SHIPPING",
+      "expected": [
+        "POL-SHIP-001"
+      ]
+    },
+    {
+      "query": "How much does delivery cost if I live 20 km from the warehouse?",
+      "category": "SHIPPING",
+      "expected": [
+        "POL-SHIP-001"
+      ]
+    },
+    {
+      "query": "Do you charge extra for delivery outside the city?",
+      "category": "SHIPPING",
+      "expected": [
+        "POL-SHIP-001"
+      ]
+    },
+    {
+      "query": "Is there a fee to carry a fridge up the stairs?",
+      "category": "SHIPPING",
+      "expected": [
+        "POL-SHIP-002"
+      ]
+    },
+    {
+      "query": "Can I pay cash on delivery for a 25 million TV?",
+      "category": "SHIPPING",
+      "expected": [
+        "POL-SHIP-002"
+      ]
+    },
+    {
+      "query": "Can I check the box for damage before paying the driver?",
+      "category": "SHIPPING",
+      "expected": [
+        "POL-SHIP-002"
+      ]
+    },
+    {
+      "query": "Is installation free for my washing machine?",
+      "category": "INSTALLATION",
+      "expected": [
+        "POL-INST-001"
+      ]
+    },
+    {
+      "query": "Do you set up the TV stand for free?",
+      "category": "INSTALLATION",
+      "expected": [
+        "POL-INST-001"
+      ]
+    },
+    {
+      "query": "Will the technician connect the water hoses of my washer?",
+      "category": "INSTALLATION",
+      "expected": [
+        "POL-INST-001"
+      ]
+    },
+    {
+      "query": "How much does wall mounting a TV cost?",
+      "category": "INSTALLATION",
+      "expected": [
+        "POL-INST-002"
+      ]
+    },
+    {
+      "query": "Do I pay extra for longer copper pipes for my air conditioner?",
+      "category": "INSTALLATION",
+      "expected": [
+        "POL-INST-002"
+      ]
+    },
+    {
+      "query": "Will the installer tell me the price before drilling the wall?",
+      "category": "INSTALLATION",
+      "expected": [
+        "POL-INST-002"
+      ]
+    },
+    {
+      "query": "What is the warranty on a Samsung TV?",
+      "category": "WARRANTY",
+      "expected": [
+        "POL-WAR-001"
+      ]
+    },
+    {
+      "query": "How long is the Samsung inverter compressor warranty?",
+      "category": "WARRANTY",
+      "expected": [
+        "POL-WAR-001"
+      ]
+    },
+    {
+      "query": "Does Samsung warranty cover a cracked screen?",
+      "category": "WARRANTY",
+      "expected": [
+        "POL-WAR-001"
+      ]
+    },
+    {
+      "query": "What warranty does an LG washer have?",
+      "category": "WARRANTY",
+      "expected": [
+        "POL-WAR-002"
+      ]
+    },
+    {
+      "query": "How long is the LG direct drive motor covered?",
+      "category": "WARRANTY",
+      "expected": [
+        "POL-WAR-002"
+      ]
+    },
+    {
+      "query": "What is the warranty for a Panasonic fridge compressor?",
+      "category": "WARRANTY",
+      "expected": [
+        "POL-WAR-003"
+      ]
+    },
+    {
+      "query": "How long is the warranty on Panasonic appliances?",
+      "category": "WARRANTY",
+      "expected": [
+        "POL-WAR-003"
+      ]
+    },
+    {
+      "query": "Do you sell gift cards?",
+      "category": "ALL",
+      "expected": []
+    },
+    {
+      "query": "What time does your store open?",
+      "category": "ALL",
+      "expected": []
+    },
+    {
+      "query": "Do you offer student discounts?",
+      "category": "ALL",
+      "expected": []
+    },
+    {
+      "query": "Can I trade in my old phone?",
+      "category": "ALL",
+      "expected": []
+    },
+    {
+      "query": "Do you price match other stores?",
+      "category": "ALL",
+      "expected": []
+    },
+    {
+      "query": "Is there a loyalty points program?",
+      "category": "ALL",
+      "expected": []
+    },
+    {
+      "query": "Can I buy on installments with zero interest?",
+      "category": "ALL",
+      "expected": []
+    },
+    {
+      "query": "Do you recycle old batteries?",
+      "category": "ALL",
+      "expected": []
+    },
+    {
+      "query": "Do you offer extended warranty insurance plans for purchase?",
+      "category": "WARRANTY",
+      "expected": []
+    },
+    {
+      "query": "Can I cancel my membership?",
+      "category": "ALL",
+      "expected": []
+    },
+    {
+      "query": "Do you deliver to Cambodia?",
+      "category": "SHIPPING",
+      "expected": []
+    },
+    {
+      "query": "Do you install solar panels?",
+      "category": "INSTALLATION",
+      "expected": []
+    },
+    {
+      "query": "What is your refund policy for concert tickets?",
+      "category": "RETURNS",
+      "expected": []
+    },
+    {
+      "query": "How long do I have to return a TV that stopped working?",
+      "category": "RETURNS",
+      "expected": [
+        "POL-RET-001"
+      ]
+    },
+    {
+      "query": "Is there a free delivery for orders over 500,000 dong?",
+      "category": "SHIPPING",
+      "expected": [
+        "POL-SHIP-001"
+      ]
+    },
+    {
+      "query": "Will two people deliver my large fridge?",
+      "category": "SHIPPING",
+      "expected": [
+        "POL-SHIP-002"
+      ]
+    },
+    {
+      "query": "Does LG cover the refrigerator compressor for ten years?",
+      "category": "WARRANTY",
+      "expected": [
+        "POL-WAR-002"
+      ]
+    },
+    {
+      "query": "What does the Samsung warranty exclude?",
+      "category": "WARRANTY",
+      "expected": [
+        "POL-WAR-001"
+      ]
+    },
+    {
+      "query": "Do you offer free TV installation on a table stand?",
+      "category": "INSTALLATION",
+      "expected": [
+        "POL-INST-001"
+      ]
+    },
+    {
+      "query": "Can I get same-day delivery by drone?",
+      "category": "SHIPPING",
+      "expected": []
+    },
+    {
+      "query": "Do you sell phones on contract?",
+      "category": "ALL",
+      "expected": []
+    },
+    {
+      "query": "Can I rent a washing machine monthly?",
+      "category": "ALL",
+      "expected": []
+    },
+    {
+      "query": "Do you have a referral bonus?",
+      "category": "ALL",
+      "expected": []
+    }
+  ]
+}

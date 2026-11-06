@@ -2,7 +2,7 @@
 
 No build step: `static/index.html` loads `static/app.js` as a native ES module, and every other file in `static/` is a plain ES module served from `/static/`. There are no runtime dependencies and no CDN scripts (the stylesheet imports Google Fonts only). Audio is 16 kHz mono PCM16 in both directions.
 
-The client implements the client half of [VOICE_PROTOCOL.md](VOICE_PROTOCOL.md). The `session` hello negotiates the protocol (`protocol: 2` enables `audio_chunk` envelopes and `interrupt`; anything else falls back to v1, where envelope-less binary frames simply play) and the barge-in mode; the observation log shows `Protocol v2 · barge-in <mode>`.
+The client implements the client half of [VOICE_PROTOCOL.md](VOICE_PROTOCOL.md). The `session` hello negotiates the protocol (`protocol: 2` enables `audio_chunk` envelopes and `interrupt`; anything else falls back to v1, where envelope-less binary frames simply play) and the barge-in mode; the voice connection events show `Protocol v2 · barge-in <mode>`.
 
 ## Modules
 
@@ -12,7 +12,7 @@ The client implements the client half of [VOICE_PROTOCOL.md](VOICE_PROTOCOL.md).
 | `voice-protocol.js` | Protocol surface: `PROTOCOL_VERSION`, `HANDLER_OWNER` (a client decision for every server message type), pure per-type reducers that never throw, handoff routing |
 | `vad.js` | Adaptive SNR voice-activity gate (`LocalVad`), tuning bounds, echo gate, flag-aware onset routing (`routeVadOnset`), small shared helpers |
 | `audio-playback.js` | Playback state: `audio_start` replacement, stale `audio_end` ignore, per-batch envelope validation (`expectChunk`, `consumeChunkForBinary`), generation guard |
-| `audio-format.js` | Streaming 16 kHz resampler (anti-alias low-pass, state kept across frames), 20 ms PCM batcher, PCM16 decode |
+| `audio-format.js` | Streaming 16 kHz resampler (Blackman-windowed sinc anti-alias FIR, flat to ~6.6 kHz, stopband from ~8.2 kHz; state kept across frames), 16 ms (512-byte) PCM batcher, PCM16 decode |
 | `mic-capture.js` | Mic start/stop state machine with an in-flight token |
 | `mic-capture-node.js` | AudioWorklet capture with ScriptProcessor fallback, friendly microphone errors, granted-constraint logging |
 | `pcm-worklet.js` | AudioWorklet processor: forwards raw Float32 frames to the main thread |
@@ -22,7 +22,7 @@ The client implements the client half of [VOICE_PROTOCOL.md](VOICE_PROTOCOL.md).
 
 ## Capture
 
-Capture requests `echoCancellation`, `noiseSuppression`, and `autoGainControl` (mono) and logs which constraints the browser granted. AudioWorklet frames (128 samples at the device rate) go through one streaming resampler per capture session — filter state and read position carry across frames, so no sample is dropped at frame boundaries — and are sent as fixed 20 ms (640-byte) binary frames. Microphone failures show friendly messages (denied / no device / busy) and never leave the UI parked in "Listening".
+Capture requests `echoCancellation`, `noiseSuppression`, and `autoGainControl` (mono) and logs which constraints the browser granted. AudioWorklet frames (128 samples at the device rate) go through one streaming resampler per capture session — filter state and read position carry across frames, so no sample is dropped at frame boundaries — and are sent as fixed 16 ms (512-byte) binary frames, the design's `ASR_CHUNK_BYTES` / `ASR_CHUNK_MS`. The anti-alias filter matters for recognition: the earlier single-pole filter let 9–18 kHz content through at only 4–7 dB down, folded into 2–7 kHz; on Piper speech with added hiss above 9 kHz, Vosk word errors went from 6 % to 9–11 % with it and stayed at 6 % with the FIR. The filter costs under 1 % of one core. Microphone failures show friendly messages (denied / no device / busy) and never leave the UI parked in "Listening".
 
 ## Voice activity detection
 
@@ -59,9 +59,13 @@ node scripts/check_static.mjs             # DOM ids and imports resolve; no inne
 uv run pytest -q tests/test_protocol_contract.py
 ```
 
+## Session activity log
+
+The observation panel shows the server's activity log (`activity-log.js`, data from `GET /api/sessions/{id}/activity`), refreshed after every turn, support request, interruption and degraded turn. One entry per turn, newest first; the newest turn is open and the operator's own open/closed choices are kept across refreshes. Each entry lists the branch that handled the turn, each tool call with its checks (allowlist, arguments, verified session, throttle, service, customer scope) and result, the audit rows with their `audit_id` prefix, state changes and the reply. Values are shown masked, as the server stored them, and model names and timings are deliberately absent. **Download log (.md)** saves the same log as Markdown. The browser's own low-level events (playback, protocol, reconnects) stay in the collapsed *Voice connection events* list.
+
 ## Manual acceptance checklist
 
-Run in Chrome and Safari, in a quiet room and then a noisy one, with DevTools open. "Log" means the page's observation log.
+Run in Chrome and Safari, in a quiet room and then a noisy one, with DevTools open. "Log" means the page's voice connection events (under the session activity log).
 
 1. **Load** — `/` loads without console errors; the mic button is enabled only when providers are configured; the log shows `Voice protocol negotiated · v2 · barge-in off`; the Tune drawer opens and its sliders persist across a reload.
 2. **Rapid toggles** — click the mic five times within ~300 ms: one transition at a time, no stuck "Starting…", no leaked microphone indicator.

@@ -155,12 +155,7 @@ def test_ws_voice_to_policy_evidence_tts_and_playback_ack(monkeypatch):
         lambda: FakeDialogue(
             PlannedToolCall(
                 "retrieve_policy_clauses",
-                {
-                    "query": "LG washing machine warranty",
-                    "category": "WARRANTY",
-                    "product_category": "WASHING_MACHINE",
-                    "brand": "LG",
-                },
+                {"query": "What warranty applies to my LG washing machine?", "category": "WARRANTY"},
             )
         ),
     )
@@ -168,7 +163,7 @@ def test_ws_voice_to_policy_evidence_tts_and_playback_ack(monkeypatch):
 
     with TestClient(api.app) as client:
         session = client.post("/api/sessions").json()
-        with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+        with client.websocket_connect(f"/ws/sessions/{session['session_id']}?token={session['token']}") as socket:
             assert socket.receive_json()["type"] == "session"
             socket.send_json(
                 {
@@ -236,10 +231,12 @@ def test_ws_voice_to_policy_evidence_tts_and_playback_ack(monkeypatch):
             assert ack["ttfa_ms"] is None
             assert ack["ttfa_status"] == "unavailable"
 
-        trace = client.get(f"/api/sessions/{session['session_id']}/trace").json()
+        trace = client.get(
+            f"/api/sessions/{session['session_id']}/trace", headers={"VoxCare-Session-Token": session["token"]}
+        ).json()
 
     assert asr.audio_frames == [b"\x00\x00\x01\x00"]
-    assert trace["persistence"] == "in_memory_for_session_lifetime"
+    assert trace["persistence"].startswith("audit rows in audit_log")
     actions = [event for event in trace["events"] if event.get("action_name")]
     tool = next(event for event in actions if event["action_name"] == "TOOL_INVOCATION")
     assert tool["request_payload_json"]["tool_name"] == "retrieve_policy_clauses"
@@ -261,7 +258,7 @@ def test_ws_jev_configuration_failure_requires_explicit_finish_and_does_not_fake
 
     with TestClient(api.app) as client:
         session = client.post("/api/sessions").json()
-        with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+        with client.websocket_connect(f"/ws/sessions/{session['session_id']}?token={session['token']}") as socket:
             assert socket.receive_json()["type"] == "session"
             socket.send_json({"type": "start", "sample_rate": 16_000, "channels": 1, "encoding": "pcm_s16le"})
             assert socket.receive_json()["type"] == "provider_unavailable"
@@ -310,7 +307,9 @@ def test_ws_jev_configuration_failure_requires_explicit_finish_and_does_not_fake
             assert turn["result"]["outcome"] == "ANSWERED"
             assert "ORD-1002" in turn["result"]["assistant_text"]
 
-        trace = client.get(f"/api/sessions/{session['session_id']}/trace").json()
+        trace = client.get(
+            f"/api/sessions/{session['session_id']}/trace", headers={"VoxCare-Session-Token": session["token"]}
+        ).json()
 
     assert any(event.get("event_type") == "PROVIDER_UNAVAILABLE" for event in trace["events"])
     degraded_audits = [event for event in trace["events"] if event.get("action_name") == "TURN_COMPLETION_DEGRADED"]
@@ -326,7 +325,7 @@ def test_http_handoff_records_latest_server_observed_asr_context(monkeypatch):
 
     with TestClient(api.app) as client:
         session = client.post("/api/sessions").json()
-        with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+        with client.websocket_connect(f"/ws/sessions/{session['session_id']}?token={session['token']}") as socket:
             assert socket.receive_json()["type"] == "session"
             socket.send_json({"type": "start", "sample_rate": 16_000, "channels": 1, "encoding": "pcm_s16le"})
             assert socket.receive_json()["type"] == "voice_started"
@@ -343,17 +342,26 @@ def test_http_handoff_records_latest_server_observed_asr_context(monkeypatch):
             )
             receive_until(socket, lambda m: m.get("type") == "transcript_partial")
             response = client.post(
-                f"/api/sessions/{session['session_id']}/handoff", json={"reason": "Please get me a person"}
+                f"/api/sessions/{session['session_id']}/handoff",
+                headers={"VoxCare-Session-Token": session["token"]},
+                json={"reason": "Please get me a person"},
             )
             assert response.status_code == 200
-        trace = client.get(f"/api/sessions/{session['session_id']}/trace").json()
+        trace = client.get(
+            f"/api/sessions/{session['session_id']}/trace", headers={"VoxCare-Session-Token": session["token"]}
+        ).json()
+        packets = client.get(
+            f"/api/sessions/{session['session_id']}/handoffs", headers={"VoxCare-Session-Token": session["token"]}
+        ).json()["handoff_context_packets"]
 
     handoff = next(item for item in trace["events"] if item.get("action_name") == "HANDOFF_REQUEST_RECORDED")
-    serialized = str(handoff["request_payload_json"])
-    assert "caller@example.com" not in serialized
-    assert "415" not in serialized
-    assert "[REDACTED_EMAIL]" in serialized
-    assert "[REDACTED_PHONE]" in serialized
+    assert handoff["request_payload_json"]["tool_name"] == "escalate_to_human"
+    assert handoff["response_payload_json"]["agent_activity_state"] == "queued"
+    transcript = str(packets[0]["context_payload_json"]["verbatim_transcript"])
+    assert "caller@example.com" not in transcript
+    assert "555-0134" not in transcript
+    assert "[REDACTED_EMAIL]" in transcript
+    assert "+141***34" in transcript
 
 
 def test_stalled_conversation_dispatch_times_out_with_explicit_unavailable(monkeypatch):
@@ -371,7 +379,7 @@ def test_stalled_conversation_dispatch_times_out_with_explicit_unavailable(monke
 
     with TestClient(api.app) as client:
         session = client.post("/api/sessions").json()
-        with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+        with client.websocket_connect(f"/ws/sessions/{session['session_id']}?token={session['token']}") as socket:
             start_fake_voice(client, session["session_id"], socket)
             asr.queue.put(
                 {"type": "transcript", "text": "Track ORD-1002", "is_final": True, "speech_final": True, "sequence": 1}
@@ -397,7 +405,7 @@ def test_stalled_conversation_dispatch_times_out_with_explicit_unavailable(monke
 
     with TestClient(api.app) as client:
         session = client.post("/api/sessions").json()
-        with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+        with client.websocket_connect(f"/ws/sessions/{session['session_id']}?token={session['token']}") as socket:
             start_fake_voice(client, session["session_id"], socket)
             send_final_and_quiet(asr, socket)
             assert dialogue.started.wait(2)
@@ -416,7 +424,7 @@ def test_reset_cancels_slow_provider_and_invalidates_old_session(monkeypatch):
 
     with TestClient(api.app) as client:
         session = client.post("/api/sessions").json()
-        with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+        with client.websocket_connect(f"/ws/sessions/{session['session_id']}?token={session['token']}") as socket:
             start_fake_voice(client, session["session_id"], socket)
             send_final_and_quiet(asr, socket)
             assert dialogue.started.wait(2)
@@ -425,7 +433,7 @@ def test_reset_cancels_slow_provider_and_invalidates_old_session(monkeypatch):
             assert reset["session"]["session_id"] != session["session_id"]
             assert dialogue.cancelled.wait(2)
             dialogue.release.set()
-        old = client.get(f"/api/sessions/{session['session_id']}")
+        old = client.get(f"/api/sessions/{session['session_id']}", headers={"VoxCare-Session-Token": session["token"]})
 
     assert old.status_code == 404
 
@@ -448,10 +456,11 @@ def test_jev_receives_masked_prior_turn_and_can_evaluate_stable_partial(monkeypa
         session = client.post("/api/sessions").json()
         prior = client.post(
             f"/api/sessions/{session['session_id']}/turns",
+            headers={"VoxCare-Session-Token": session["token"]},
             json={"text": "My email is caller@example.com"},
         )
         assert prior.status_code == 200
-        with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+        with client.websocket_connect(f"/ws/sessions/{session['session_id']}?token={session['token']}") as socket:
             assert socket.receive_json()["type"] == "session"
             socket.send_json({"type": "start", "sample_rate": 16_000, "channels": 1, "encoding": "pcm_s16le"})
             receive_until(socket, lambda m: m.get("type") == "voice_started")
@@ -505,7 +514,7 @@ def test_jev_holds_and_joins_resumed_deepgram_segments_then_discards_late_final(
 
     with TestClient(api.app) as client:
         session = client.post("/api/sessions").json()
-        with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+        with client.websocket_connect(f"/ws/sessions/{session['session_id']}?token={session['token']}") as socket:
             assert socket.receive_json()["type"] == "session"
             socket.send_json({"type": "start", "sample_rate": 16_000, "channels": 1, "encoding": "pcm_s16le"})
             receive_until(socket, lambda m: m.get("type") == "voice_started")
@@ -589,7 +598,9 @@ def test_jev_holds_and_joins_resumed_deepgram_segments_then_discards_late_final(
                 }
             )
             for _ in range(20):
-                trace = client.get(f"/api/sessions/{session['session_id']}/trace").json()
+                trace = client.get(
+                    f"/api/sessions/{session['session_id']}/trace", headers={"VoxCare-Session-Token": session["token"]}
+                ).json()
                 if any(event.get("event_type") == "ASR_TRANSCRIPT_AFTER_COMMIT_DISCARDED" for event in trace["events"]):
                     break
                 time.sleep(0.05)
@@ -611,7 +622,7 @@ def test_new_quiet_stable_transcript_cancels_old_jev_call_and_uses_latest_versio
 
     with TestClient(api.app) as client:
         session = client.post("/api/sessions").json()
-        with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as socket:
+        with client.websocket_connect(f"/ws/sessions/{session['session_id']}?token={session['token']}") as socket:
             assert socket.receive_json()["type"] == "session"
             socket.send_json({"type": "start", "sample_rate": 16_000, "channels": 1, "encoding": "pcm_s16le"})
             receive_until(socket, lambda m: m.get("type") == "voice_started")

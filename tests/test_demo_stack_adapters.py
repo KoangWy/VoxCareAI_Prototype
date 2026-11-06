@@ -134,11 +134,11 @@ class ChatCompletionsAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(plans), 3)
         self.assertEqual([plan.call_id for plan in plans], ["call-0", "call-1", "call-2"])
 
-    async def test_parallel_tool_calls_false_sent_and_gateway_fallback(self):
+    async def test_parallel_tool_calls_true_sent_and_gateway_fallback(self):
         adapter, fake = self._adapter()
         fake.events = [_chunk_delta(content="hi")]
         await adapter.plan_turn(user_text="hi", history=(), available_tools=TOOLS)
-        self.assertFalse(fake.payload["parallel_tool_calls"])
+        self.assertTrue(fake.payload["parallel_tool_calls"])
 
         class RejectingCompletions(_FakeChatCompletions):
             async def create(self, **payload):
@@ -432,6 +432,44 @@ class DemoStackSelectionTests(unittest.TestCase):
                 else:
                     os.environ[key] = value
 
+    def test_conversation_factory_can_use_anthropic_as_primary(self):
+        import os
+
+        from voxcare.providers.llm import AnthropicMessagesAdapter
+
+        env = {
+            "VOXCARE_CONVERSATION_PROVIDER": "anthropic",
+            "ANTHROPIC_API_KEY": "unit-test",
+            "VOXCARE_ANTHROPIC_MODEL": "claude-haiku-5-5",
+        }
+        previous = {key: os.environ.get(key) for key in (*env, "OPENAI_API_KEY")}
+        os.environ.pop("OPENAI_API_KEY", None)
+        os.environ.update(env)
+        try:
+            cascade = conversation_factory_from_env()
+            self.assertIsInstance(cascade, CascadeDialogueProvider)
+            self.assertIsInstance(cascade.primary, AnthropicMessagesAdapter)
+            self.assertIsNone(cascade.fallback)
+            status = provider_status()
+            self.assertEqual(status["conversation"].name, "Anthropic Messages")
+            self.assertTrue(status["conversation"].configured)
+            self.assertEqual(status["conversation"].model, "claude-haiku-5-5")
+            os.environ.pop("ANTHROPIC_API_KEY")
+            self.assertIsNone(conversation_factory_from_env())
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_conversation_provider_is_validated(self):
+        from voxcare.config import ConfigError, load_provider_settings
+
+        with self.assertRaises(ConfigError) as caught:
+            load_provider_settings({"VOXCARE_CONVERSATION_PROVIDER": "gemini"})
+        self.assertIn("VOXCARE_CONVERSATION_PROVIDER", str(caught.exception))
+
     def test_conversation_factory_rejects_unknown_transport(self):
         import os
 
@@ -448,3 +486,83 @@ class DemoStackSelectionTests(unittest.TestCase):
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+
+
+class AnthropicParallelToolUseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_several_tool_use_blocks_in_one_response_are_all_planned(self):
+        from types import SimpleNamespace
+
+        from voxcare.providers.llm import AnthropicMessagesAdapter
+
+        sent: dict = {}
+
+        class _Stream:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get_final_message(self):
+                return SimpleNamespace(
+                    content=[
+                        SimpleNamespace(
+                            type="tool_use", name="lookup_order_details", input={"order_code": "ORD-1002"}, id="a"
+                        ),
+                        SimpleNamespace(
+                            type="tool_use",
+                            name="track_shipment_status",
+                            input={"order_code": "ORD-1002", "tracking_code": None},
+                            id="b",
+                        ),
+                        SimpleNamespace(type="tool_use", name="list_customer_orders", input={}, id="c"),
+                    ]
+                )
+
+        class _Messages:
+            def stream(self, **payload):
+                sent.update(payload)
+                return _Stream()
+
+        adapter = AnthropicMessagesAdapter(api_key="test-key", model="claude-haiku-5-5")
+        adapter.client = SimpleNamespace(messages=_Messages())
+        calls = await adapter.plan_turn(
+            user_text="Where is ORD-1002 and what did I buy before?", history=(), available_tools=[]
+        )
+
+        self.assertEqual(sent["tool_choice"], {"type": "auto", "disable_parallel_tool_use": False})
+        self.assertEqual(
+            [call.name for call in calls], ["lookup_order_details", "track_shipment_status", "list_customer_orders"]
+        )
+        self.assertGreaterEqual(sent["max_tokens"], 1024)  # 250 cut multi-tool plans inside the JSON arguments
+
+    async def test_text_and_a_cut_output_are_kept_as_the_plan_note(self):
+        from types import SimpleNamespace
+
+        from voxcare.providers.llm import AnthropicMessagesAdapter
+
+        class _Stream:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def get_final_message(self):
+                return SimpleNamespace(
+                    stop_reason="max_tokens",
+                    content=[
+                        SimpleNamespace(type="text", text="Let me  check\nthat."),
+                        SimpleNamespace(type="tool_use", name="compare_products", input={}, id="a"),
+                    ],
+                )
+
+        class _Messages:
+            def stream(self, **payload):
+                return _Stream()
+
+        adapter = AnthropicMessagesAdapter(api_key="test-key", model="claude-haiku-5-5")
+        adapter.client = SimpleNamespace(messages=_Messages())
+        calls = await adapter.plan_turn(user_text="Compare the TVs", history=(), available_tools=[])
+        self.assertEqual([call.name for call in calls], ["compare_products"])
+        self.assertEqual(calls.note, "Let me check that. [output cut at the token limit]")

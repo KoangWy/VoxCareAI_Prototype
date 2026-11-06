@@ -13,6 +13,10 @@ import logging
 import uuid
 from dataclasses import asdict
 
+from opentelemetry import trace
+
+from ..observability.otel import tracer
+from ..session.speech import spoken_reply
 from . import protocol as vm
 from .state import VoiceState, monotonic_ms
 from .turn_control import is_current
@@ -101,7 +105,12 @@ async def dispatch_turn(  # type: ignore[no-untyped-def]
         )
         await boundary.record_observation(session_id, "tts_unavailable", turn_id=result.turn_id)
         return
-    await _speak(boundary, send_json, send_binary, session_id, state, result.turn_id, result.assistant_text)
+    # The screen shows the full grounded text; TTS gets the voice rendering of the same tool outcomes.
+    spoken = spoken_reply(result)
+    with tracer().start_as_current_span(
+        "tts", attributes={"session_id": session_id, "turn_epoch": result.turn_epoch, "turn_id": result.turn_id}
+    ):
+        await _speak(boundary, send_json, send_binary, session_id, state, result.turn_id, spoken)
 
 
 async def _speak(boundary, send_json, send_binary, session_id: str, state: VoiceState, turn_id: str, text: str) -> None:  # type: ignore[no-untyped-def]
@@ -126,8 +135,11 @@ async def _speak(boundary, send_json, send_binary, session_id: str, state: Voice
             "text_sent_to_tts",
             turn_id=turn_id,
             audio_chunk_id=audio_chunk_id,
+            spoken_chars=len(text),
             T4_server_monotonic_ms=monotonic_ms(),
         )
+        span = trace.get_current_span()
+        span.add_event("T4_text_forwarded_to_tts", {"spoken_chars": len(text)})
         chunk_index = 0
         async for chunk in state.tts.stream(text):
             if not await still_ours():
@@ -142,6 +154,7 @@ async def _speak(boundary, send_json, send_binary, session_id: str, state: Voice
                     audio_chunk_id=audio_chunk_id,
                     T5_server_monotonic_ms=monotonic_ms(),
                 )
+                span.add_event("T5_first_audio_chunk", {"byte_length": len(chunk)})
             await send_json(
                 {
                     "type": vm.SERVER_AUDIO_CHUNK,

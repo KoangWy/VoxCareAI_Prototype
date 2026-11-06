@@ -1,83 +1,92 @@
-"""`SessionBoundary`: the one path every caller turn takes, typed or spoken.
+"""`SessionBoundary`: the one path every caller turn takes, typed or spoken (the turn orchestrator).
 
-Owns the per-session state (history, trace, turn epoch, turn controller),
-plans a turn with the conversation provider, executes the allowlisted
-read-only tool calls under the session's customer scope, and renders one
-grounded answer. A turn epoch fences every await: a reset or a newer turn
-turns late results into ``STALE_DISCARDED`` instead of answers.
+Session state lives in Redis (``session:{id}``, TTL 1800 s refreshed on
+activity; guide §4.2). In-process objects that cannot be serialised — the
+per-session lock, the conversation-provider instance, the turn controller and
+the observation trace — are cached here and rebuilt on demand.
+
+A turn: mask the transcript (PII never reaches the model, a log or a store
+unmasked), let the :class:`~.dialogue.DialogueManager` decide and run tool calls
+through the middleware, then store the masked exchange. A turn epoch fences every
+await: a reset, a barge-in or a newer turn turns late results into
+``STALE_DISCARDED`` instead of answers.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
+import contextvars
 import logging
 import time
 import uuid
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from ..contracts import MAX_TOOL_CALLS_PER_TURN, DialogueProvider, PlannedToolCall, SessionView, ToolOutcome, TurnResult
-from ..domain.policy import PolicyRetriever
-from ..domain.seed import SeedOMS
-from ..privacy import mask_pii
+from ..contracts import DialogueProvider, SessionView, ToolOutcome, TurnResult
+from ..domain import copy
+from ..domain.enums import ActionName, ActionStatus, Actor, AuditOutcome
+from ..middleware.tool_middleware import ToolContext
+from ..observability.audit import audit_json
+from ..observability.otel import tracer
+from ..security import pii
+from ..security.tokens import InvalidToken, SessionClaims
+from ..storage.seed import FIXTURE_SESSIONS
 from ..trace import TraceLedger
-from .render import CLARIFY_LIMIT_TEXT, CLARIFY_TEXT, render_results
-from .tools import (
-    CATALOG_TOOLS,
-    MAX_HANDOFF_REASON_CHARS,
-    ORDER_CODE,
-    TOOL_NAMES,
-    TOOLS,
-    InvalidToolArguments,
-    audit_outcome,
-    normalize_order_code,
-    safe_arguments,
-    validate_arguments,
-)
+from . import activity
+from .dialogue import MAX_HISTORY_MESSAGES
+from .tools import normalize_spoken_order_codes, normalize_spoken_terms
 
 logger = logging.getLogger("voxcare.session")
 
-_DEFAULT_POLICY_RETRIEVER = object()
+# The turn whose task wrote an audit row: a superseded turn that finishes late must not add its rows to the
+# activity entry of the turn that replaced it (log SES-345e37a0, turns 16 and 17).
+_TURN_EPOCH: contextvars.ContextVar[int | None] = contextvars.ContextVar("voxcare_turn_epoch", default=None)
+
 MAX_TEXT_CHARS = 2_000
-MAX_CLARIFICATIONS = 3
 MAX_SESSIONS = 200
-# Completed messages kept per session (and sent as model context); older ones drop first.
-MAX_HISTORY_MESSAGES = 24
-# Recent completed messages shared with the turn judge and handoff context.
 CONTEXT_MESSAGES = 6
+DEFAULT_CUSTOMER = "CUST-001"
 
 
 @dataclass
-class _Session:
+class _Local:
     session_id: str
-    customer_id: str = "CUST-001"
-    locale: str = "en-US"
-    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
-    active: bool = True
-    turn_epoch: int = 0
-    clarification_count: int = 0
-    history: list[dict[str, str]] = field(default_factory=list)
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     dialogue: DialogueProvider | None = None
-    trace: TraceLedger = field(default_factory=TraceLedger)
     turn_controller: Any = None
-    handoffs: list[Mapping[str, Any]] = field(default_factory=list)
+    trace: TraceLedger = field(default_factory=TraceLedger)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    turn_epoch: int = 0
+    active: bool = True
     live_transcript: str = ""
+    turn_events: list[Mapping[str, Any]] = field(default_factory=list)
+    events_by_epoch: dict[int | None, list[Mapping[str, Any]]] = field(default_factory=dict)
+    activity: list[dict[str, Any]] = field(default_factory=list)
     last_touched_monotonic: float = field(default_factory=time.monotonic)
 
-    def remember(self, role: str, content: str) -> None:
-        self.history.append({"role": role, "content": content})
-        del self.history[:-MAX_HISTORY_MESSAGES]
+    def log(self, entry: dict[str, Any]) -> dict[str, Any]:
+        self.activity.append(entry)
+        del self.activity[: -activity.MAX_ENTRIES]
+        return entry
 
-    def forget_unanswered(self, entry: Mapping[str, str]) -> None:
-        """Drop a user message whose turn produced no answer, so the model never answers it late."""
-        for index in range(len(self.history) - 1, -1, -1):
-            if self.history[index] is entry:
-                del self.history[index]
-                return
+
+class _TracingPlanner:
+    """Wraps the conversation provider in an ``llm`` span with the T2/T3 events (guide §9.5)."""
+
+    def __init__(self, provider: DialogueProvider, session_id: str, epoch: int) -> None:
+        self.provider = provider
+        self.session_id = session_id
+        self.epoch = epoch
+
+    async def plan_turn(self, **kwargs: Any) -> Any:
+        with tracer().start_as_current_span(
+            "llm", attributes={"session_id": self.session_id, "turn_epoch": self.epoch}
+        ) as span:
+            span.add_event("T2_prompt_dispatched")
+            result = await self.provider.plan_turn(**kwargs)
+            span.add_event("T3_first_model_output")
+            return result
 
 
 class SessionBoundary:
@@ -86,138 +95,311 @@ class SessionBoundary:
     def __init__(
         self,
         *,
-        dialogue: DialogueProvider | None,
-        oms: SeedOMS | None = None,
+        dialogue: DialogueProvider | None = None,
         dialogue_factory: Callable[[], DialogueProvider | None] | None = None,
         turn_controller: Any = None,
-        policy_retriever: Any = _DEFAULT_POLICY_RETRIEVER,
         turn_controller_factory: Callable[[], Any] | None = None,
+        runtime: Any = None,
     ) -> None:
         self.dialogue = dialogue
         self.dialogue_factory = dialogue_factory or (lambda: dialogue)
-        self.oms = oms or SeedOMS()
         self.turn_controller = turn_controller
         self.turn_controller_factory = turn_controller_factory
-        self.policy_retriever = PolicyRetriever() if policy_retriever is _DEFAULT_POLICY_RETRIEVER else policy_retriever
-        self._sessions: dict[str, _Session] = {}
+        self._runtime = runtime
+        self._local: dict[str, _Local] = {}
         self._lock = asyncio.Lock()
+        if runtime is not None:
+            self._listen(runtime)
+
+    # -- runtime --
+
+    def attach(self, runtime: Any) -> None:
+        self._runtime = runtime
+        self._local.clear()
+        self._listen(runtime)
+
+    def detach(self) -> Any:
+        runtime, self._runtime = self._runtime, None
+        self._local.clear()
+        return runtime
+
+    @property
+    def runtime(self) -> Any:
+        if self._runtime is None:
+            from ..runtime import build_memory_runtime
+
+            self.attach(build_memory_runtime())
+        return self._runtime
+
+    def _listen(self, runtime: Any) -> None:
+        def on_audit(row: Mapping[str, Any]) -> None:
+            local = self._local.get(row["session_id"])
+            if local is not None:
+                event = local.trace.append_audit(audit_json(row))
+                local.turn_events.append(event)
+                local.events_by_epoch.setdefault(_TURN_EPOCH.get(), []).append(event)
+
+        if on_audit not in runtime.audit.listeners:
+            runtime.audit.listeners.append(on_audit)
+
+    def _now(self) -> datetime:
+        return self.runtime.clock.now()
 
     # -- session registry --
 
-    async def _active(self, session_id: str, *, touch: bool = False) -> _Session | None:
-        async with self._lock:
-            session = self._sessions.get(session_id)
-            if session is None or not session.active:
-                return None
-            if touch:
-                session.last_touched_monotonic = time.monotonic()
-            return session
+    def _ensure_local(self, session_id: str) -> _Local:
+        local = self._local.get(session_id)
+        if local is None:
+            local = _Local(
+                session_id=session_id,
+                dialogue=self.dialogue_factory(),
+                turn_controller=self.turn_controller_factory()
+                if self.turn_controller_factory
+                else self.turn_controller,
+            )
+            self._local[session_id] = local
+            while len(self._local) > MAX_SESSIONS:
+                oldest = min(self._local, key=lambda sid: self._local[sid].last_touched_monotonic)
+                del self._local[oldest]
+        local.last_touched_monotonic = time.monotonic()
+        return local
 
-    def _evict_if_over_budget(self) -> None:
-        """Bounded LRU (caller holds the lock): evicted sessions are discarded outright."""
-        while len(self._sessions) > MAX_SESSIONS:
-            oldest_id = min(self._sessions, key=lambda sid: self._sessions[sid].last_touched_monotonic)
-            del self._sessions[oldest_id]
+    async def _record(self, session_id: str, *, touch: bool = False) -> dict[str, Any] | None:
+        store = self.runtime.store
+        record = await store.get_session(session_id)
+        if record is None:
+            local = self._local.pop(session_id, None)
+            if local is not None:
+                local.active = False
+            return None
+        if touch:
+            await store.touch_session(session_id)
+        return record
 
-    async def create_session(self) -> SessionView:
-        session = _Session(
-            session_id=f"SES-{uuid.uuid4().hex}",
-            dialogue=self.dialogue_factory(),
-            turn_controller=self.turn_controller_factory() if self.turn_controller_factory else self.turn_controller,
+    async def create_session(
+        self, *, verified: bool = True, fixture_session_id: str | None = None, customer_id: str | None = None
+    ) -> SessionView:
+        if fixture_session_id is not None and fixture_session_id not in FIXTURE_SESSIONS:
+            raise ValueError("unknown fixture session")
+        session_id = fixture_session_id or f"SES-{uuid.uuid4().hex}"
+        if fixture_session_id:
+            customer = FIXTURE_SESSIONS[fixture_session_id] if verified else None
+        else:
+            customer = (customer_id or DEFAULT_CUSTOMER) if verified else None
+        now = self._now().astimezone(UTC).isoformat()
+        record = {
+            "session_id": session_id,
+            "customer_id": customer,
+            "channel": "VoiceWebRTC",
+            "turn_count": 0,
+            "active_order_id": None,
+            "created_at": now,
+            "last_active_at": now,
+            "turn_epoch": 0,
+            "llm_active_provider": None,
+            "llm_consecutive_failures": 0,
+            "slot_state": None,
+            "paused_topic": None,
+            "history": [],
+            "fixture": fixture_session_id is not None,
+            "verified": customer is not None,
+            "verification_mode": "verified" if verified else "unverified",
+        }
+        if fixture_session_id:
+            await self._drop_local(session_id)
+        await self.runtime.store.put_session(record)
+        self._ensure_local(session_id).log(
+            activity.session_entry(customer_id=customer, verification_mode=record["verification_mode"])
         )
-        async with self._lock:
-            self._sessions[session.session_id] = session
-            self._evict_if_over_budget()
-        return self._view(session)
+        return self._view(record, self._local[session_id])
+
+    async def _drop_local(self, session_id: str) -> None:
+        local = self._local.pop(session_id, None)
+        if local is not None:
+            local.active = False
 
     async def get_session(self, session_id: str) -> SessionView | None:
-        session = await self._active(session_id, touch=True)
-        return self._view(session) if session is not None else None
+        record = await self._record(session_id, touch=True)
+        if record is None:
+            return None
+        return self._view(record, self._ensure_local(session_id))
 
     async def reset_session(self, session_id: str) -> SessionView | None:
-        async with self._lock:
-            old = self._sessions.pop(session_id, None)
-            if old is None or not old.active:
-                return None
-            old.active = False
-        return await self.create_session()
+        record = await self._record(session_id)
+        if record is None:
+            return None
+        await self.runtime.store.delete_session(session_id)
+        await self._drop_local(session_id)
+        return await self.create_session(verified=record.get("verification_mode", "verified") == "verified")
+
+    def issue_token(self, session: SessionView | Mapping[str, Any], *, probe: bool = False) -> str:
+        session_id = session["session_id"] if isinstance(session, Mapping) else session.session_id
+        customer = session.get("customer_id") if isinstance(session, Mapping) else session.customer_id
+        return self.runtime.tokens.issue(session_id, customer, now=datetime.now(UTC), probe=probe)
+
+    async def verify_token(self, token: str | None, *, session_id: str | None = None) -> SessionClaims:
+        claims = self.runtime.tokens.verify(token, now=datetime.now(UTC), session_id=session_id)
+        if claims.probe:
+            return claims
+        record = await self._record(claims.session_id)
+        if record is None:
+            raise InvalidToken("session expired")
+        return claims
 
     async def get_turn_controller(self, session_id: str) -> Any | None:
-        session = await self._active(session_id)
-        return session.turn_controller if session is not None else None
+        if await self._record(session_id) is None:
+            return None
+        return self._ensure_local(session_id).turn_controller
 
     async def get_conversation_history(self, session_id: str) -> tuple[Mapping[str, str], ...]:
-        """Recent completed dialogue context for a turn decision."""
-        session = await self._active(session_id)
-        if session is None:
+        record = await self._record(session_id)
+        if record is None:
             return ()
-        return tuple(dict(item) for item in session.history[-CONTEXT_MESSAGES:])
+        return tuple(dict(item) for item in record.get("history", [])[-CONTEXT_MESSAGES:])
 
     async def record_observation(self, session_id: str, event_type: str, **fields: Any) -> Mapping[str, Any] | None:
-        session = await self._active(session_id)
-        if session is None:
+        if await self._record(session_id) is None:
             return None
-        return session.trace.record_observation(session_id=session_id, event_type=event_type, **fields)
+        return self._ensure_local(session_id).trace.record_observation(
+            session_id=session_id, event_type=event_type, **fields
+        )
 
     async def record_audit_event(self, session_id: str, event: Mapping[str, Any]) -> Mapping[str, Any] | None:
-        session = await self._active(session_id)
-        if session is None:
+        """Persist a turn-controller audit row (TURN_COMPLETION_DEGRADED / _FALLBACK_RESOLVED) in ``audit_log``."""
+        if await self._record(session_id) is None:
             return None
-        return session.trace.append_audit(event)
+        row = dict(event)
+        stamp = row.get("timestamp")
+        if isinstance(stamp, str):
+            row["timestamp"] = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        elif stamp is None:
+            row["timestamp"] = datetime.now(UTC)
+        row["request_payload_json"] = pii.mask_payload(row.get("request_payload_json") or {})
+        row["response_payload_json"] = pii.mask_payload(row.get("response_payload_json") or {})
+        await self.runtime.repository.insert_audit(row)
+        local = self._ensure_local(session_id)
+        event = local.trace.append_audit(audit_json(row))
+        summary = _TURN_CONTROL_SUMMARIES.get(str(row.get("action_name")), str(row.get("action_name")))
+        local.log(activity.event_entry(summary, activity.audit_step(event)))
+        return event
 
     async def session_trace(self, session_id: str) -> tuple[Mapping[str, Any], ...] | None:
-        session = await self._active(session_id)
-        return session.trace.snapshot() if session is not None else None
+        if await self._record(session_id) is None:
+            return None
+        return self._ensure_local(session_id).trace.snapshot()
+
+    async def session_audit(self, session_id: str) -> list[dict[str, Any]] | None:
+        if await self._record(session_id) is None:
+            return None
+        return [audit_json(row) for row in await self.runtime.repository.list_audit(session_id)]
+
+    async def session_activity(self, session_id: str) -> dict[str, Any] | None:
+        """The session's activity log (masked), oldest entry first."""
+        record = await self._record(session_id)
+        if record is None:
+            return None
+        return {
+            "session_id": session_id,
+            "customer_id": record.get("customer_id"),
+            "entries": [dict(entry) for entry in self._ensure_local(session_id).activity],
+        }
+
+    async def session_handoffs(self, session_id: str) -> list[dict[str, Any]] | None:
+        if await self._record(session_id) is None:
+            return None
+        return await self.runtime.store.list_handoffs(session_id)
 
     async def set_live_transcript(self, session_id: str, text: str) -> bool:
-        """Keep only the latest server-observed ASR text available for a support request."""
-        session = await self._active(session_id)
-        if session is None:
+        if await self._record(session_id) is None:
             return False
-        session.live_transcript = str(text)[-MAX_TEXT_CHARS:]
+        self._ensure_local(session_id).live_transcript = pii.mask(str(text)[-MAX_TEXT_CHARS:])
         return True
+
+    async def note_barge_in(self, session_id: str, *, interrupted_epoch: int | None = None) -> int | None:
+        """Barge-in (guide §10.3): advance the epoch so in-flight work goes stale, and pause the current topic."""
+        record = await self._record(session_id)
+        if record is None:
+            return None
+        local = self._ensure_local(session_id)
+        epoch = max(local.turn_epoch, int(record.get("turn_epoch", 0)), interrupted_epoch or 0) + 1
+        local.turn_epoch = epoch
+        record["turn_epoch"] = epoch
+        if record.get("last_topic") and record.get("last_reply"):
+            record["paused_topic"] = {"label": record["last_topic"], "reply": record["last_reply"]}
+            record["resume_pending"] = False
+        await self.runtime.store.put_session(record)
+        local.trace.record_observation(
+            session_id=session_id, event_type="barge_in", interrupted_epoch=interrupted_epoch, turn_epoch=epoch
+        )
+        steps = [activity.step("state", f"Turn epoch advanced to {epoch}: late results from before are dropped")]
+        if record.get("paused_topic"):
+            steps.append(
+                activity.step("state", f"Paused topic: {record['paused_topic']['label']} (resume question follows)")
+            )
+        local.log(activity.event_entry("Caller interrupted the reply (barge-in)", *steps))
+        return epoch
 
     async def record_handoff(
         self,
         session_id: str,
         *,
-        reason: str,
+        reason: str = "caller_requested_support",
         context: str | None = None,
         turn_id: str | None = None,
         turn_epoch: int | None = None,
     ) -> Mapping[str, Any] | None:
-        session = await self._active(session_id, touch=True)
-        if session is None:
+        """The support button and the voice ``handoff_request``: ``escalate_to_human`` through the middleware."""
+        record = await self._record(session_id, touch=True)
+        if record is None:
             return None
-        if context is None:
-            completed = "\n".join(
-                f"{item.get('role', 'unknown')}: {item.get('content', '')}"
-                for item in session.history[-CONTEXT_MESSAGES:]
-            )
-            context = "\n".join(part for part in (completed, session.live_transcript) if part.strip())
-        return self._record_handoff(session, reason, context, turn_id, turn_epoch)
-
-    @staticmethod
-    def _record_handoff(
-        session: _Session, reason: str, context: str, turn_id: str | None, turn_epoch: int | None
-    ) -> Mapping[str, Any]:
-        handoff = {
-            "request_id": str(uuid.uuid4()),
-            "reason": mask_pii(reason).strip()[:MAX_HANDOFF_REASON_CHARS] or "caller_requested_support",
-            "context": mask_pii(context).strip()[-500:],
-            "requested_at": datetime.now(UTC).isoformat(),
-            "status": "REQUEST_RECORDED",
-        }
-        session.handoffs.append(handoff)
-        audit = session.trace.record_action(
-            session_id=session.session_id,
-            turn_id=turn_id,
-            turn_epoch=turn_epoch,
-            action_name="HANDOFF_REQUEST_RECORDED",
-            request_payload={"reason": handoff["reason"], "context": handoff["context"]},
-            response_payload={"request_id": handoff["request_id"], "status": handoff["status"]},
+        local = self._ensure_local(session_id)
+        audit_start = len(local.turn_events)
+        live = context if context is not None else local.live_transcript
+        transcript = list(record.get("history", []))[-MAX_HISTORY_MESSAGES:]
+        if live and live.strip():
+            transcript.append({"role": "user", "content": pii.mask(live)})
+        result = await self.runtime.middleware.handle(
+            ToolContext(
+                session_id=session_id,
+                customer_id=record.get("customer_id"),
+                user_text=pii.mask(reason),
+                turn_epoch=turn_epoch or int(record.get("turn_epoch", 0)),
+                fixture_session=bool(record.get("fixture")),
+                active_order_code=record.get("active_order_id"),
+                transcript=transcript,
+                symptom_history=record.get("symptom_history", []),
+                recommendation=record.get("recommendation"),
+                summary=f"Caller pressed the support button ({pii.mask(reason)}). Active order: "
+                f"{record.get('active_order_id') or 'none'}.",
+            ),
+            "escalate_to_human",
+            {"trigger_reason": "CUSTOMER_REQUESTED_ESCALATION", "priority": "NORMAL"},
         )
-        return {**handoff, "audit_event": audit}
+        entry = local.log(activity.support_entry(result, local.turn_events[audit_start:]))
+        if not result.ok:
+            message = (
+                copy.VERIFY_ACCOUNT_PROMPT
+                if result.error_code == "UNAUTHENTICATED_SESSION"
+                else copy.HANDOFF_SERVICE_ERROR
+            )
+            return {
+                "status": result.error_code,
+                "message": message,
+                "request_id": None,
+                "ticket_number": None,
+                "activity": entry,
+            }
+        envelope = result.envelope
+        return {
+            "status": envelope["transfer_status"],
+            "request_id": envelope["handoff_id"],
+            "handoff_id": envelope["handoff_id"],
+            "ticket_number": envelope["ticket_number"],
+            "business_hours_notice": envelope["business_hours_notice"],
+            "message": copy.handoff_recorded(envelope["ticket_number"]),
+            "audit_event": local.turn_events[-1] if local.turn_events else None,
+            "activity": entry,
+        }
 
     # -- turns --
 
@@ -232,265 +414,245 @@ class SessionBoundary:
         text = user_text.strip()
         if not text or len(user_text) > MAX_TEXT_CHARS:
             return _result(session_id, request_id, 0, "INVALID_INPUT", "", None)
-        session = await self._active(session_id, touch=True)
-        if session is None:
-            return _result(session_id, request_id, 0, "SESSION_EXPIRED", user_text, None)
-
+        runtime = self.runtime
+        record = await self._record(session_id, touch=True)
+        if record is None:
+            return _result(session_id, request_id, 0, "SESSION_EXPIRED", pii.mask(user_text), None)
+        local = self._ensure_local(session_id)
         started = time.monotonic()
-        async with session.lock:
-            if not session.active:
-                return _result(session_id, request_id, session.turn_epoch, "SESSION_EXPIRED", user_text, None)
-            session.turn_epoch += 1
-            epoch = session.turn_epoch
-            history = tuple(dict(item) for item in session.history)
-            session.remember("user", text)
-            user_entry = session.history[-1]
+        async with local.lock:
+            record = await self._record(session_id) or record
+            local.turn_epoch = max(local.turn_epoch, int(record.get("turn_epoch", 0))) + 1
+            epoch = local.turn_epoch
+            record["turn_epoch"] = epoch
+            record["turn_count"] = int(record.get("turn_count", 0)) + 1
+            record["last_active_at"] = self._now().astimezone(UTC).isoformat()
+            observations: list[Mapping[str, Any]] = []
+            codes: tuple[str, ...] | list[str] = ()
+            terms: tuple[str, ...] = ()
+            if source == "asr_final":
+                text, terms = normalize_spoken_terms(text)
+                # Small ASR models spell or mishear codes ("or rd one zero zero two"); fix them before planning.
+                text, codes = normalize_spoken_order_codes(text)
+                if codes:
+                    observations.append(
+                        local.trace.record_observation(
+                            session_id=session_id,
+                            event_type="SPOKEN_ORDER_CODE_NORMALIZED",
+                            turn_id=request_id,
+                            turn_epoch=epoch,
+                            codes=list(codes),
+                        )
+                    )
+            masked = pii.mask(text)
+            await runtime.store.put_session(record)
+            local.turn_events.clear()
+            _TURN_EPOCH.set(epoch)
+            for stale in [key for key in local.events_by_epoch if key is None or key < epoch - 4]:
+                del local.events_by_epoch[stale]
+            before = activity.state_snapshot(record)
+            turn_number = int(record["turn_count"])
+
+        def is_current() -> bool:
+            return local.active and local.turn_epoch == epoch and self._local.get(session_id) is local
 
         def timing() -> dict[str, float]:
             return {"request_started_monotonic": started, "provider_complete_monotonic": time.monotonic()}
 
-        if session.dialogue is None:
-            session.forget_unanswered(user_entry)
-            event = _event("provider_unavailable", session, request_id, epoch, reason="conversation_not_configured")
-            return _result(session_id, request_id, epoch, "DEPENDENCY_UNAVAILABLE", text, None, events=(event,))
-
-        try:
-            raw_plan = await session.dialogue.plan_turn(user_text=text, history=history, available_tools=TOOLS)
-        except Exception as exc:
-            session.forget_unanswered(user_entry)
-            logger.warning(
-                "conversation provider failed",
-                extra={"provider_error_type": type(exc).__name__, "request_id": request_id},
+        planner = _TracingPlanner(local.dialogue, session_id, epoch) if local.dialogue is not None else None
+        with tracer().start_as_current_span(
+            "turn", attributes={"session_id": session_id, "turn_epoch": epoch, "source": source}
+        ) as span:
+            span.add_event("T1_turn_committed")
+            reply = await runtime.dialogue.respond(
+                record, raw_text=text, text=masked, planner=planner, is_current=is_current
             )
-            provider_events = _drain_provider_events(session, request_id, epoch)
-            error_event = _event("provider_error", session, request_id, epoch, error_type=type(exc).__name__)
+            span.set_attribute("turn.outcome", reply.outcome)
+            if reply.text:
+                span.add_event("T4_text_forwarded_to_tts")
+        provider_events = await self._drain_provider_events(local, record, session_id)
+        events = [*observations, *provider_events]
+        for item in reply.observations:
+            events.append(
+                local.trace.record_observation(session_id=session_id, turn_id=request_id, turn_epoch=epoch, **item)
+            )
+
+        def log_turn(outcome: str, reply_text: str | None) -> dict[str, Any]:
+            return local.log(
+                activity.turn_entry(
+                    turn=turn_number,
+                    source=source,
+                    caller_text=masked,
+                    outcome=outcome,
+                    reply_text=reply_text,
+                    route=reply.route,
+                    results=reply.results,
+                    write=reply.write,
+                    audit_rows=[*provider_events, *local.events_by_epoch.pop(epoch, [])],
+                    before=before,
+                    after=activity.state_snapshot(record),
+                    normalized_codes=list(codes),
+                    normalized_terms=list(terms),
+                )
+            )
+
+        if reply.outcome == "STALE_DISCARDED" or not is_current():
+            entry = log_turn("STALE_DISCARDED", None)
+            return _result(session_id, request_id, epoch, "STALE_DISCARDED", masked, None, activity=entry)
+        if reply.outcome == "DEPENDENCY_UNAVAILABLE":
+            exc = reply.provider_error
+            if exc is not None:
+                logger.warning(
+                    "conversation provider failed: %s: %s",
+                    type(exc).__name__,
+                    _provider_error_detail(exc),
+                    extra={"provider_error_type": type(exc).__name__, "request_id": request_id},
+                )
+                code = _provider_error_code(exc)
+                events.append(
+                    local.trace.record_observation(
+                        session_id=session_id,
+                        event_type="PROVIDER_ERROR",
+                        turn_id=request_id,
+                        turn_epoch=epoch,
+                        error_type=type(exc).__name__,
+                        **({"error_code": code} if code else {}),
+                    )
+                )
+            else:
+                events.append(
+                    local.trace.record_observation(
+                        session_id=session_id,
+                        event_type="PROVIDER_UNAVAILABLE",
+                        turn_id=request_id,
+                        turn_epoch=epoch,
+                        reason="conversation_not_configured",
+                    )
+                )
+            await runtime.store.put_session(record)
+            entry = log_turn("DEPENDENCY_UNAVAILABLE", None)
             return _result(
                 session_id,
                 request_id,
                 epoch,
                 "DEPENDENCY_UNAVAILABLE",
-                text,
+                masked,
                 None,
-                events=(*provider_events, error_event),
+                events=(*events, *local.turn_events),
                 timing=timing(),
+                activity=entry,
             )
 
-        if not _is_current(session, epoch):
-            session.forget_unanswered(user_entry)
-            return _result(session_id, request_id, epoch, "STALE_DISCARDED", text, None)
-        provider_events = _drain_provider_events(session, request_id, epoch)
-        plans = _normalise_plans(raw_plan)
-        if not plans:
-            return self._clarify(session, request_id, epoch, text, timing(), provider_events)
+        history = list(record.get("history", []))
+        history.append({"role": "user", "content": masked})
+        if reply.text:
+            history.append({"role": "assistant", "content": reply.text})
+        record["history"] = history[-MAX_HISTORY_MESSAGES:]
+        await runtime.store.put_session(record)
+        binding_changed = reply.binding_changed
+        entry = log_turn(reply.outcome, reply.text or None)
 
-        tool_outcomes: list[ToolOutcome] = []
-        audits: list[Mapping[str, Any]] = []
-        for plan in plans:
-            tool_outcome = await self._invoke_tool(session, plan.name, plan.arguments, request_id, epoch)
-            if not _is_current(session, epoch):
-                session.forget_unanswered(user_entry)
-                return _result(session_id, request_id, epoch, "STALE_DISCARDED", text, None)
-            if tool_outcome.status == "MISSING_INPUT":
-                return self._clarify(session, request_id, epoch, text, timing(), (*provider_events, *audits))
-            audits.append(self._audit_tool(session, plan, tool_outcome, request_id, epoch))
-            tool_outcomes.append(tool_outcome)
-
-        assistant_text, outcome = render_results(tool_outcomes)
-        session.remember("assistant", assistant_text)
-        session.clarification_count = 0
-        policy = next((tool for tool in tool_outcomes if tool.tool_name == "retrieve_policy_clauses"), None)
-        policy_record = (policy.record or {}) if policy is not None else {}
+        policy = next((result for result in reply.results if result.name == "retrieve_policy_clauses"), None)
+        outcomes = tuple(
+            ToolOutcome(
+                tool_name=result.name,
+                status="SUCCESS" if result.ok else str(result.error_code),
+                record=result.envelope,
+                error_code=result.error_code,
+                evidence=tuple(reply.evidence) if result is policy else (),
+            )
+            for result in reply.results
+        )
         return _result(
             session_id,
             request_id,
             epoch,
-            outcome,
-            text,
-            assistant_text,
-            tool_outcomes=tuple(tool_outcomes),
-            events=(*provider_events, *audits),
-            evidence=tuple(item for tool in tool_outcomes for item in tool.evidence),
-            policy_outcome=policy.status if policy is not None else None,
-            corpus_id=policy_record.get("corpus_id"),
-            is_fictional=policy_record.get("is_fictional"),
-            clause_version=policy_record.get("clause_version"),
-            missing_context=tuple(policy_record.get("missing_context", ())),
+            reply.outcome,
+            masked,
+            reply.text or None,
+            spoken_text=reply.voice or None,
+            tool_outcomes=outcomes,
+            tool_calls=tuple({"name": plan.name, "arguments": dict(plan.arguments)} for plan in reply.plans),
+            events=(*events, *local.turn_events),
+            evidence=tuple(reply.evidence),
+            policy_outcome=(policy.envelope.get("outcome") if policy.ok else policy.error_code) if policy else None,
+            corpus_id=policy.envelope.get("corpus_id") if policy else None,
+            is_fictional=policy.envelope.get("is_fictional") if policy else None,
+            clause_version=policy.envelope.get("clause_version") if policy else None,
+            customer_id=record.get("customer_id"),
+            binding_changed=binding_changed,
             timing=timing(),
+            activity=entry,
         )
 
-    def _audit_tool(
-        self, session: _Session, plan: PlannedToolCall, outcome: ToolOutcome, request_id: str, epoch: int
-    ) -> Mapping[str, Any]:
-        if outcome.status == "HANDOFF_REQUEST_RECORDED" and outcome.record:
-            return outcome.record["audit_event"]
-        denied = outcome.status == "OUT_OF_SCOPE"
-        return session.trace.record_action(
-            session_id=session.session_id,
-            turn_id=request_id,
-            turn_epoch=epoch,
-            action_name="AUTH_SCOPE_VIOLATION" if denied else "TOOL_INVOCATION",
-            action_status="Denied" if denied else "Success",
-            outcome_status=audit_outcome(outcome.status),
-            request_payload={"tool_name": plan.name, "arguments": safe_arguments(plan.arguments)},
-            response_payload={"tool_status": outcome.status, "error_code": outcome.error_code},
-        )
+    async def _drain_provider_events(
+        self, local: _Local, record: dict[str, Any], session_id: str
+    ) -> list[Mapping[str, Any]]:
+        drain = getattr(local.dialogue, "drain_events", None)
+        if not callable(drain):
+            return []
+        events = []
+        for item in drain():
+            if item.get("event") != "LLM_PROVIDER_FAILOVER":
+                continue
+            row = await self.runtime.audit.write(
+                session_id=session_id,
+                action_name=ActionName.LLM_PROVIDER_FAILOVER,
+                actor=Actor.SYSTEM,
+                action_status=ActionStatus.SUCCESS,
+                outcome_status=AuditOutcome.SUCCESS,
+                request={
+                    "primary_model": item.get("primary_model") or item.get("from_provider"),
+                    "consecutive_failures": int(item.get("failure_count", 2)),
+                },
+                response={
+                    "active_model": item.get("active_model") or item.get("to_provider"),
+                    "session_scope": "remainder_of_session",
+                },
+            )
+            record["llm_active_provider"] = item.get("active_model") or item.get("to_provider")
+            await self.runtime.store.put_session(record)
+            events.append(audit_json(row))
+        local.turn_events[:] = [
+            event for event in local.turn_events if event.get("action_name") != "LLM_PROVIDER_FAILOVER"
+        ]
+        return events
 
-    async def _invoke_tool(
-        self, session: _Session, name: str, arguments: Mapping[str, Any], request_id: str, epoch: int
-    ) -> ToolOutcome:
-        if name not in TOOL_NAMES:
-            return ToolOutcome("rejected", "SERVICE_ERROR", error_code="TOOL_NOT_ALLOWLISTED")
-        try:
-            args = validate_arguments(name, arguments)
-        except InvalidToolArguments:
-            return ToolOutcome(name, "SERVICE_ERROR", error_code="INVALID_TOOL_ARGUMENTS")
-        if name == "retrieve_policy_clauses":
-            return await self._retrieve_policy(args)
-        if name == "escalate_to_human":
-            context = session.history[-1]["content"] if session.history else ""
-            handoff = self._record_handoff(session, args["reason"], context, request_id, epoch)
-            return ToolOutcome(name, "HANDOFF_REQUEST_RECORDED", record=handoff)
-        if name in CATALOG_TOOLS:
-            return self._read_catalog(session, name, args)
-        return self._read_order(session, name, args["order_code"])
-
-    async def _retrieve_policy(self, args: Mapping[str, Any]) -> ToolOutcome:
-        name = "retrieve_policy_clauses"
-        if self.policy_retriever is None:
-            return ToolOutcome(name, "DEPENDENCY_UNAVAILABLE", error_code="POLICY_UNAVAILABLE")
-        filters = {key: value for key, value in args.items() if key != "query"}
-        try:
-            result = await self.policy_retriever.retrieve_policy_clauses(args["query"], filters)
-        except Exception as exc:
-            logger.warning("policy tool failed", extra={"error_type": type(exc).__name__})
-            return ToolOutcome(name, "SERVICE_ERROR", error_code="POLICY_UNAVAILABLE")
-        metadata = {
-            "corpus_id": result.corpus_id,
-            "is_fictional": result.is_fictional,
-            "clause_version": result.clause_version,
-        }
-        evidence = tuple({**asdict(item), **metadata} for item in result.evidence)
-        record = {**metadata, "missing_context": list(result.missing_context), "error_code": result.error_code}
-        return ToolOutcome(name, result.outcome, record=record, evidence=evidence, error_code=result.error_code)
-
-    def _read_order(self, session: _Session, name: str, raw_code: str) -> ToolOutcome:
-        order_code = normalize_order_code(raw_code)
-        if not order_code:
-            return ToolOutcome(name, "MISSING_INPUT")
-        if not ORDER_CODE.fullmatch(order_code):
-            return ToolOutcome(name, "NOT_FOUND")
-        read = self.oms.lookup_order_details if name == "lookup_order_details" else self.oms.track_shipment_status
-        for attempt in range(2):
-            try:
-                return read(session_customer_id=session.customer_id, order_code=order_code)
-            except TimeoutError:
-                if attempt == 0:
-                    logger.warning("OMS read timed out; retrying once", extra={"tool_name": name})
-                    continue
-                logger.warning("OMS read timed out after one retry", extra={"tool_name": name})
-                return ToolOutcome(name, "SERVICE_TIMEOUT", error_code="OMS_TIMEOUT")
-            except Exception as exc:
-                logger.error("OMS read failed", extra={"tool_name": name, "error_type": type(exc).__name__})
-                break
-        return ToolOutcome(name, "SERVICE_ERROR", error_code="OMS_UNAVAILABLE")
-
-    def _read_catalog(self, session: _Session, name: str, args: Mapping[str, Any]) -> ToolOutcome:
-        readers = {
-            "search_catalog": (self.oms.search_catalog, "CATALOG_UNAVAILABLE"),
-            "compare_products": (self.oms.compare_products, "CATALOG_UNAVAILABLE"),
-            "apply_voucher": (self.oms.apply_voucher, "PROMOTION_UNAVAILABLE"),
-        }
-        read, error_code = readers[name]
-        try:
-            return read(session_customer_id=session.customer_id, **args)
-        except Exception as exc:
-            logger.error("catalog read failed", extra={"tool_name": name, "error_type": type(exc).__name__})
-            return ToolOutcome(name, "SERVICE_ERROR", error_code=error_code)
-
-    @staticmethod
-    def _clarify(
-        session: _Session,
-        request_id: str,
-        epoch: int,
-        user_text: str,
-        timing: Mapping[str, Any],
-        prior_events: Sequence[Mapping[str, Any]] = (),
-    ) -> TurnResult:
-        session.clarification_count += 1
-        if session.clarification_count > MAX_CLARIFICATIONS:
-            prompt, outcome = CLARIFY_LIMIT_TEXT, "CLARIFICATION_LIMIT_REACHED"
-        else:
-            prompt, outcome = CLARIFY_TEXT, "NEEDS_ORDER_ID"
-        session.remember("assistant", prompt)
-        event = _event("clarification_requested", session, request_id, epoch, count=session.clarification_count)
-        return _result(
-            session.session_id,
-            request_id,
-            epoch,
-            outcome,
-            user_text,
-            prompt,
-            events=(*prior_events, event),
-            timing=timing,
-        )
-
-    @staticmethod
-    def _view(session: _Session) -> SessionView:
-        configured = session.dialogue is not None
+    def _view(self, record: Mapping[str, Any], local: _Local) -> SessionView:
+        configured = local.dialogue is not None
         return SessionView(
-            session_id=session.session_id,
-            customer_id=session.customer_id,
-            locale=session.locale,
-            turn_epoch=session.turn_epoch,
+            session_id=record["session_id"],
+            customer_id=record.get("customer_id"),
+            locale="en-US",
+            turn_epoch=max(local.turn_epoch, int(record.get("turn_epoch", 0))),
             state="ready" if configured else "conversation_provider_unavailable",
             provider_availability={"conversation": configured},
-            created_at=session.created_at,
+            created_at=record["created_at"],
+            verified=bool(record.get("customer_id")),
+            fixture=bool(record.get("fixture")),
         )
 
 
-def _is_current(session: _Session, epoch: int) -> bool:
-    return session.active and session.turn_epoch == epoch
+_TURN_CONTROL_SUMMARIES = {
+    "TURN_COMPLETION_DEGRADED": "End of turn unclear: the caller was offered to finish, retry or ask for support",
+    "TURN_COMPLETION_FALLBACK_RESOLVED": "The caller resolved the unclear turn",
+}
 
 
-def _normalise_plans(raw: PlannedToolCall | Sequence[PlannedToolCall] | None) -> list[PlannedToolCall]:
-    """Every ``plan_turn`` shape as an in-order call list capped at ``MAX_TOOL_CALLS_PER_TURN``."""
-    if raw is None:
-        return []
-    if isinstance(raw, PlannedToolCall):
-        return [raw]
-    return list(raw)[:MAX_TOOL_CALLS_PER_TURN]
+def _provider_error_detail(exc: BaseException) -> str:
+    """The provider's own error message for the log: masked, bounded, never the request or a credential."""
+    return pii.mask(" ".join(str(exc).split()))[:300] or "no detail"
 
 
-def _drain_provider_events(session: _Session, request_id: str, epoch: int) -> tuple[Mapping[str, Any], ...]:
-    drain = getattr(session.dialogue, "drain_events", None)
-    if not callable(drain):
-        return ()
-    events = []
-    for item in drain():
-        if item.get("event") != "LLM_PROVIDER_FAILOVER":
-            continue
-        events.append(
-            session.trace.record_action(
-                session_id=session.session_id,
-                turn_id=request_id,
-                turn_epoch=epoch,
-                action_name="LLM_PROVIDER_FAILOVER",
-                request_payload={
-                    "from_provider": item.get("from_provider"),
-                    "failure_count": item.get("failure_count"),
-                },
-                response_payload={"to_provider": item.get("to_provider")},
-            )
-        )
-    return tuple(events)
-
-
-def _event(event_type: str, session: _Session, request_id: str, epoch: int, **fields: Any) -> Mapping[str, Any]:
-    event = session.trace.record_observation(
-        session_id=session.session_id, event_type=event_type, turn_id=request_id, turn_epoch=epoch, **fields
-    )
-    logger.info(json.dumps(event, sort_keys=True))
-    return event
+def _provider_error_code(exc: BaseException) -> str | None:
+    """A short machine code for the trace: the provider's error code/type, else the HTTP status."""
+    body = getattr(exc, "body", None)
+    if isinstance(body, Mapping):
+        code = body.get("code") or body.get("type")
+        if isinstance(code, str) and code:
+            return code[:64]
+    status = getattr(exc, "status_code", None)
+    return f"http_{status}" if isinstance(status, int) else None
 
 
 def _result(
@@ -507,4 +669,4 @@ def _result(
     return TurnResult(session_id, turn_id, epoch, outcome, user_text, assistant_text, **fields)
 
 
-__all__ = ["MAX_CLARIFICATIONS", "MAX_HISTORY_MESSAGES", "MAX_SESSIONS", "MAX_TEXT_CHARS", "SessionBoundary"]
+__all__ = ["CONTEXT_MESSAGES", "MAX_SESSIONS", "MAX_TEXT_CHARS", "SessionBoundary"]

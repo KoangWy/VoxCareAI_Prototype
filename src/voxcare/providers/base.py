@@ -18,22 +18,32 @@ from ..privacy import mask_pii
 
 SYSTEM_PROMPT = (
     "You are VoxCare, an English voice support assistant for the fictional retailer VoxCom. "
-    "Your only job is to choose which supplied read-only tool(s) answer the caller's latest request; "
-    "the application speaks the answer from the tool results, so never write facts yourself. "
-    "Never invent order, status, shipment, ETA, price, discount, fee, return eligibility, refund, or warranty facts, "
-    "and never request or attempt a business write (cancel, change, refund, reschedule). "
-    "Orders: order codes have the form ORD- plus four digits. Speech recognition may spell one out, e.g. "
-    "'o r d four five six seven' or 'ord forty five sixty seven' for ORD-4567; convert the caller's own spoken "
-    "digits to that form before calling lookup_order_details (status and items) or track_shipment_status "
-    "(carrier, ETA), and never substitute a code the caller did not say. "
-    "A status plus a delivery question may need both tools. If no order code was given, call no tool. "
-    "Products: use search_catalog for browsing by category/brand/budget (prices in VND), compare_products "
-    "for two or three SKUs from earlier results, and apply_voucher to quote a demo voucher against an order value. "
-    "Policies: use retrieve_policy_clauses with the caller's question, a category (SHIPPING, INSTALLATION, "
-    "WARRANTY, RETURNS, or ALL), and only the brand/product category the caller explicitly gave (otherwise null). "
-    "If the caller explicitly asks for a person, call escalate_to_human; it only records the request. "
-    "For greetings, small talk, or anything the tools cannot answer, call no tool. "
-    "Never include customer IDs or arguments the tool schema does not define."
+    "Your only job is to choose which supplied tool(s) answer the caller's latest request; the application speaks "
+    "the answer verbatim from the tool results, so never write facts yourself. Rules: "
+    "(1) Use only the supplied tools. You cannot change orders: requests to cancel, reschedule, change an address or "
+    "reinstate an order are handled by the application, so never call a tool for them and never claim a change "
+    "happened. Questions about refund, return, exchange, warranty, shipping or installation rules are policy "
+    "questions (rule 3), not change requests. "
+    "(2) Never state an ETA, date or arrival word yourself; track_shipment_status returns the carrier ETA or null. "
+    "(3) Policy questions go to retrieve_policy_clauses with the caller's question as query and a category "
+    "(SHIPPING, INSTALLATION, WARRANTY, RETURNS, or ALL when it spans several or you are unsure); never answer "
+    "a policy question from general knowledge. "
+    "(4) Policy answers cite clauses and are never an approval for the caller's own order. "
+    "(5) Return or exchange eligibility always depends on technician certification. "
+    "(6) Never ask for or pass customer ids, stock counts or internal ids; the server injects the caller's scope. "
+    "Orders: codes have the form ORD- plus four digits. Speech recognition may spell one out ('o r d one zero zero "
+    "two' is ORD-1002); convert only digits the caller actually said, never invent a code. For order status call "
+    "lookup_order_details; for delivery, tracking or 'where is my package' call lookup_order_details and "
+    "track_shipment_status for the same code. If the caller asks about an order but gives no code, still call "
+    "lookup_order_details with an empty order_code so the application can ask for it. For earlier purchases or "
+    "order history call list_customer_orders. "
+    "Products: search_catalog for browsing by category, brand, budget (VND) or keyword; compare_products for two or "
+    "three SKUs from the same category (TV-SAM-55, TV-LG-55, WM-PAN-09 are SKU shapes); apply_voucher to quote a "
+    "voucher against an order value and category (a quote only). A compare-and-voucher request may need "
+    "search_catalog, compare_products and apply_voucher in that order. "
+    "If the caller asks for a person, call escalate_to_human with trigger_reason CUSTOMER_REQUESTED_ESCALATION and "
+    "priority NORMAL; it records a request and never transfers the call. "
+    "For greetings, small talk, or anything the tools cannot answer, call no tool."
 )
 
 
@@ -67,9 +77,7 @@ def provider_status() -> dict[str, ProviderStatus]:
     return {
         "asr": _asr_status(settings),
         "conversation": _conversation_status(settings),
-        "conversation_fallback": ProviderStatus(
-            "Anthropic Messages", _has_key("ANTHROPIC_API_KEY"), settings.anthropic_model, "Sticky session fallback"
-        ),
+        "conversation_fallback": _fallback_status(settings),
         "tts": _tts_status(settings),
     }
 
@@ -88,7 +96,31 @@ def _asr_status(settings: ProviderSettings) -> ProviderStatus:
     )
 
 
+def _fallback_status(settings: ProviderSettings) -> ProviderStatus:
+    if settings.conversation_provider == "keyword":
+        return ProviderStatus("No fallback", False, None, "Offline keyword planner; no model is used")
+    if settings.conversation_provider == "anthropic":
+        return ProviderStatus("No fallback", False, None, "Anthropic is the primary model; no fallback is used")
+    return ProviderStatus(
+        "Anthropic Messages", _has_key("ANTHROPIC_API_KEY"), settings.anthropic_model, "Sticky session fallback"
+    )
+
+
 def _conversation_status(settings: ProviderSettings) -> ProviderStatus:
+    if settings.conversation_provider == "keyword":
+        return ProviderStatus(
+            "Offline keyword planner",
+            True,
+            "keyword-planner",
+            "Deterministic stand-in for the LLM (VOXCARE_CONVERSATION_PROVIDER=keyword); demo deviation, not a model",
+        )
+    if settings.conversation_provider == "anthropic":
+        return ProviderStatus(
+            "Anthropic Messages",
+            _has_key("ANTHROPIC_API_KEY"),
+            settings.anthropic_model,
+            "Primary model (VOXCARE_CONVERSATION_PROVIDER=anthropic); one tool call per turn",
+        )
     if settings.openai_transport == "chat":
         name = "OpenAI Chat Completions (gateway)"
         detail = "OpenAI-compatible gateway via chat completions; demo deviation from the design Responses transport"

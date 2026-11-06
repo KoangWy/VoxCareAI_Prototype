@@ -1,255 +1,152 @@
-"""The model-visible read-only tool registry and its argument contracts.
+"""Spoken order-code normalisation for ASR transcripts, plus the tool registry re-export.
 
-Seven tools are exposed to the conversation model. Every one is read-only:
-order/shipment reads are scoped to the session customer server-side, the
-catalog trio and the policy retriever read fictional fixtures, and
-``escalate_to_human`` only *records* a support request. There are no write
-tools; an unknown tool name is rejected before dispatch.
+The model-visible registry, the validator and the middleware live in
+:mod:`voxcare.middleware`; this module keeps the ASR-side helper that turns
+"o r d one zero zero two" into ``ORD-1002`` before a transcript is planned.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
-from typing import Any
 
-MAX_HANDOFF_REASON_CHARS = 200
-PRODUCT_CATEGORIES = ("TV_AV", "REFRIGERATOR", "WASHING_MACHINE", "AIR_CONDITIONER", "KITCHEN")
-POLICY_CATEGORIES = ("SHIPPING", "INSTALLATION", "WARRANTY", "RETURNS", "ALL")
+from ..domain.services.orders import ORDER_CODE, normalize_order_code
+from ..middleware.registry import PHASE1_REGISTRY as TOOL_NAMES
+from ..middleware.registry import TOOLS
 
-ORDER_CODE = re.compile(r"^ORD-[0-9]{4}$")
-# Spoken or typed variants of an order code: "ord 1002", "ORD1002", "ord_1002".
-_ORDER_CODE_VARIANT = re.compile(r"^ORD[\s_.-]*([0-9]{4})$")
+_UNIT_WORDS = {
+    "zero": 0, "oh": 0, "o": 0, "one": 1, "two": 2, "three": 3, "four": 4,
+    "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+}  # fmt: skip
+_TEEN_WORDS = {
+    "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+    "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+}  # fmt: skip
+_TENS_WORDS = {"twenty": 2, "thirty": 3, "forty": 4, "fifty": 5, "sixty": 6, "seventy": 7, "eighty": 8, "ninety": 9}
+# "o r d", "ord", and the small-model mishearings "or d" / "or rd" / "o rd" / "oh are dee";
+# or the word "order" (optionally "number"/"code") directly followed by four spoken digits.
+_SPOKEN_CODE_PREFIX = re.compile(
+    r"\b(?:(?P<order>order(?:\s+(?:number|code))?)|o\s*r\s*d|or\s+r?d|o\s+rd|(?:o|oh)\s+(?:r|are|ar)\s+(?:d|dee))(?![a-z])",
+    re.IGNORECASE,
+)
+_SPOKEN_TOKEN = re.compile(r"[\s,.-]*([a-z]+|[0-9]+)", re.IGNORECASE)
 
-ORDER_TOOLS = frozenset({"lookup_order_details", "track_shipment_status"})
-CATALOG_TOOLS = frozenset({"search_catalog", "compare_products", "apply_voucher"})
 
-TOOLS: tuple[Mapping[str, Any], ...] = (
-    {
-        "name": "lookup_order_details",
-        "description": "Read the caller's order status and items using its VoxCom order code (format ORD-1234).",
-        "parameters": {
-            "type": "object",
-            "properties": {"order_code": {"type": "string"}},
-            "required": ["order_code"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "track_shipment_status",
-        "description": "Read shipment, carrier status, tracking events, and carrier ETA for an order code (ORD-1234).",
-        "parameters": {
-            "type": "object",
-            "properties": {"order_code": {"type": "string"}},
-            "required": ["order_code"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "retrieve_policy_clauses",
-        "description": (
-            "Read applicable fictional VoxCom customer-support policy clauses "
-            "for shipping, installation, returns, or warranty. Never infer order facts."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "minLength": 1},
-                "category": {"type": "string", "enum": list(POLICY_CATEGORIES)},
-                "product_category": {
-                    "type": ["string", "null"],
-                    "enum": [*PRODUCT_CATEGORIES, None],
-                },
-                "brand": {"type": ["string", "null"]},
-            },
-            "required": ["query", "category", "product_category", "brand"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "escalate_to_human",
-        "description": "Record the caller's request for human support. This does not transfer or contact an agent.",
-        "parameters": {
-            "type": "object",
-            "properties": {"reason": {"type": "string", "minLength": 1, "maxLength": MAX_HANDOFF_REASON_CHARS}},
-            "required": ["reason"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "search_catalog",
-        "description": (
-            "Read-only electronics catalog search by category, brand, max budget, and keyword. "
-            "Empty results are reported, never invented."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "category": {"type": "string", "enum": list(PRODUCT_CATEGORIES)},
-                "brand": {"type": ["string", "null"]},
-                "max_price_vnd": {"type": ["integer", "null"]},
-                "keyword": {"type": ["string", "null"]},
-            },
-            "required": ["category", "brand", "max_price_vnd", "keyword"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "compare_products",
-        "description": (
-            "Read-only comparison of two or three catalog models of the same category "
-            "on recorded attributes only. Never invent an unrecorded specification."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "skus": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 3},
-            },
-            "required": ["skus"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "apply_voucher",
-        "description": (
-            "Read-only evaluation of a fictional demo voucher against an order value and category. "
-            "Returns the discount quote without changing any order or promotion."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "voucher_code": {"type": "string", "minLength": 1},
-                "order_value_vnd": {"type": "integer"},
-                "category": {"type": "string", "enum": list(PRODUCT_CATEGORIES)},
-            },
-            "required": ["voucher_code", "order_value_vnd", "category"],
-            "additionalProperties": False,
-        },
-    },
+def _is_number_token(token: str) -> bool:
+    low = token.lower()
+    return token.isdigit() or low in _UNIT_WORDS or low in _TEEN_WORDS or low in _TENS_WORDS
+
+
+def _spoken_digits(text: str, start: int) -> tuple[str, int] | None:
+    """Exactly four spoken digits from ``start`` ("one zero zero two", "ten oh two", "forty five sixty seven")."""
+    digits, pos = "", start
+    while len(digits) < 4:
+        match = _SPOKEN_TOKEN.match(text, pos)
+        if match is None:
+            break
+        token = match.group(1).lower()
+        if token.isdigit():
+            digits += token
+        elif token in _UNIT_WORDS:
+            digits += str(_UNIT_WORDS[token])
+        elif token in _TEEN_WORDS:
+            digits += str(_TEEN_WORDS[token])
+        elif token in _TENS_WORDS:
+            unit = _SPOKEN_TOKEN.match(text, match.end())
+            unit_word = unit.group(1).lower() if unit else ""
+            if unit_word in _UNIT_WORDS and _UNIT_WORDS[unit_word] > 0 and unit_word not in {"o", "oh"}:
+                digits += f"{_TENS_WORDS[token]}{_UNIT_WORDS[unit_word]}"
+                match = unit
+            else:
+                digits += f"{_TENS_WORDS[token]}0"
+        else:
+            break
+        pos = match.end()
+    if len(digits) != 4:
+        return None
+    following = _SPOKEN_TOKEN.match(text, pos)
+    if following is not None and _is_number_token(following.group(1)):
+        return None  # a longer number is not an order code
+    return digits, pos
+
+
+def normalize_spoken_order_codes(text: str) -> tuple[str, tuple[str, ...]]:
+    """Rewrite spoken or misheard order codes in an ASR transcript to ``ORD-####``.
+
+    Deterministic and conservative: exactly four digits must follow the prefix,
+    so "order two TVs" or a five-digit number is left alone. Returns the new
+    text and the codes it produced.
+    """
+    parts: list[str] = []
+    codes: list[str] = []
+    pos = 0
+    for prefix in _SPOKEN_CODE_PREFIX.finditer(text):
+        if prefix.start() < pos:
+            continue
+        spoken = _spoken_digits(text, prefix.end())
+        if spoken is None:
+            continue
+        digits, end = spoken
+        code = f"ORD-{digits}"
+        parts.append(text[pos : prefix.start()])
+        parts.append(f"{prefix.group('order')} {code}" if prefix.group("order") else code)
+        codes.append(code)
+        pos = end
+    if not codes:
+        return text, ()
+    parts.append(text[pos:])
+    return "".join(parts), tuple(codes)
+
+
+# Domain terms the small offline ASR model mishears or spells out (implementation choice, voice turns only).
+# Each rewrite is narrow: a known VoxCom term, in the shapes Vosk produces for it.
+_VOUCHER_SPOKEN = re.compile(
+    r"\b(?:vox|box|fox|vocs|vax)\s*-?\s*com(?P<tet>\s+(?:tet|tat|tets|ted))?(?:\s+underscore)?\s+"
+    r"(?:five\s+hundred|500)\s*(?:k|kay|okay|thousand)\b",
+    re.IGNORECASE,
+)
+_ERROR_CODE_SPOKEN = re.compile(
+    r"\b(?P<lead>error(?:\s+code)?|code|shows?|showing|displays?|displaying)\s+(?:an?\s+)?(?:e|ee|he)\s*(?:four|for|4)\b",
+    re.IGNORECASE,
+)
+_INCH_SPOKEN = re.compile(
+    r"\b(?P<tens>forty|fifty|sixty|seventy|eighty)[\s-]+(?P<unit>[a-z]+)[\s-]+inch(?:es)?\b", re.IGNORECASE
+)
+_TERM_REWRITES = (
+    (re.compile(r"\b(?:samson|sam\s+sung|sam\s+song|samsong)\b", re.IGNORECASE), "Samsung"),
+    (re.compile(r"\b(?:l\s+g|el\s+gee?|elle\s+gee)\b", re.IGNORECASE), "LG"),
 )
 
-TOOL_NAMES = frozenset(tool["name"] for tool in TOOLS)
 
+def normalize_spoken_terms(text: str) -> tuple[str, tuple[str, ...]]:
+    """Rewrite misheard VoxCom terms in an ASR transcript; returns the text and "heard → term" notes."""
+    notes: list[str] = []
 
-class InvalidToolArguments(ValueError):
-    """The model sent arguments outside the tool's contract."""
+    def note(heard: str, term: str) -> str:
+        notes.append(f"“{heard}” → {term}")
+        return term
 
+    text = _VOUCHER_SPOKEN.sub(lambda m: note(m.group(0), "VOXCOM_TET_500K" if m.group("tet") else "VOXCOM_500K"), text)
+    text = _ERROR_CODE_SPOKEN.sub(
+        lambda m: f"{m.group('lead')} {note(m.group(0)[len(m.group('lead')) :].strip(), 'E4')}", text
+    )
 
-def normalize_order_code(raw: str) -> str:
-    """Canonical ``ORD-####`` form for typed or spoken variants; unknown shapes pass through upper-cased."""
-    compact = raw.strip().upper()
-    match = _ORDER_CODE_VARIANT.fullmatch(compact)
-    return f"ORD-{match.group(1)}" if match else compact
+    def inches(match: re.Match[str]) -> str:
+        unit = _UNIT_WORDS.get(match.group("unit").lower())
+        if unit is None or match.group("unit").lower() in {"o", "oh"}:
+            return match.group(0)
+        return note(match.group(0), f"{_TENS_WORDS[match.group('tens').lower()]}{unit}-inch")
 
-
-def _is_int(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _optional_str(arguments: Mapping[str, Any], key: str) -> str | None:
-    value = arguments.get(key)
-    if value is not None and not isinstance(value, str):
-        raise InvalidToolArguments(key)
-    return value
-
-
-def validate_arguments(name: str, arguments: object) -> dict[str, Any]:
-    """Check one call against its tool contract; raises :exc:`InvalidToolArguments`.
-
-    Optional (nullable) fields may be omitted. Unknown keys are rejected.
-    """
-    if not isinstance(arguments, Mapping):
-        raise InvalidToolArguments("arguments")
-    keys = set(arguments)
-    if name in ORDER_TOOLS:
-        if keys != {"order_code"} or not isinstance(arguments["order_code"], str):
-            raise InvalidToolArguments("order_code")
-        return {"order_code": arguments["order_code"]}
-    if name == "retrieve_policy_clauses":
-        if keys - {"query", "category", "product_category", "brand"} or not {"query", "category"} <= keys:
-            raise InvalidToolArguments("keys")
-        query, category = arguments["query"], arguments["category"]
-        if not isinstance(query, str) or not query.strip() or not isinstance(category, str):
-            raise InvalidToolArguments("query")
-        filters = {"category": category}
-        for key in ("product_category", "brand"):
-            if key in arguments:
-                filters[key] = _optional_str(arguments, key)
-        return {"query": query, **filters}
-    if name == "escalate_to_human":
-        reason = arguments.get("reason")
-        if keys != {"reason"} or not isinstance(reason, str) or not reason.strip():
-            raise InvalidToolArguments("reason")
-        if len(reason) > MAX_HANDOFF_REASON_CHARS:
-            raise InvalidToolArguments("reason")
-        return {"reason": reason}
-    if name == "search_catalog":
-        if keys - {"category", "brand", "max_price_vnd", "keyword"} or not isinstance(arguments.get("category"), str):
-            raise InvalidToolArguments("category")
-        max_price = arguments.get("max_price_vnd")
-        if max_price is not None and not _is_int(max_price):
-            raise InvalidToolArguments("max_price_vnd")
-        return {
-            "category": arguments["category"],
-            "brand": _optional_str(arguments, "brand"),
-            "max_price_vnd": max_price,
-            "keyword": _optional_str(arguments, "keyword"),
-        }
-    if name == "compare_products":
-        skus = arguments.get("skus")
-        if keys != {"skus"} or not isinstance(skus, list) or not all(isinstance(item, str) for item in skus):
-            raise InvalidToolArguments("skus")
-        return {"skus": list(skus)}
-    if name == "apply_voucher":
-        if keys != {"voucher_code", "order_value_vnd", "category"}:
-            raise InvalidToolArguments("keys")
-        code, value, category = arguments["voucher_code"], arguments["order_value_vnd"], arguments["category"]
-        if not isinstance(code, str) or not code.strip() or not _is_int(value) or not isinstance(category, str):
-            raise InvalidToolArguments("voucher")
-        return {"voucher_code": code, "order_value_vnd": value, "category": category}
-    raise InvalidToolArguments("tool")
-
-
-def safe_arguments(arguments: Mapping[str, Any]) -> dict[str, Any]:
-    """Audit-safe projection of tool arguments: identifiers kept, free text reduced to a length."""
-    safe: dict[str, Any] = {}
-    for key, value in arguments.items():
-        if key == "query" and isinstance(value, str):
-            safe["query_char_count"] = min(len(value), 500)
-        elif key == "keyword" and isinstance(value, str):
-            safe["keyword_char_count"] = min(len(value), 100)
-        elif key in {"order_code", "category", "product_category", "brand", "voucher_code"} and isinstance(value, str):
-            safe[key] = value[:100]
-        elif key == "skus" and isinstance(value, list) and all(isinstance(item, str) for item in value):
-            safe["skus"] = [item[:30] for item in value[:3]]
-        elif key in {"order_value_vnd", "max_price_vnd"} and (value is None or _is_int(value)):
-            safe[key] = value
-    return safe
-
-
-def audit_outcome(status: str) -> str:
-    """Map a tool status onto the audit ``outcome_status`` vocabulary."""
-    return {
-        "SUCCESS": "SUCCESS",
-        "OUT_OF_SCOPE": "DENIED",
-        "INSUFFICIENT_EVIDENCE": "SUCCESS",
-        "NEEDS_CONTEXT": "SUCCESS",
-        "HANDOFF_REQUEST_RECORDED": "SUCCESS",
-    }.get(status, "FAILED")
+    text = _INCH_SPOKEN.sub(inches, text)
+    for pattern, term in _TERM_REWRITES:
+        text = pattern.sub(lambda m, term=term: note(m.group(0), term), text)
+    return text, tuple(notes)
 
 
 __all__ = [
-    "CATALOG_TOOLS",
-    "MAX_HANDOFF_REASON_CHARS",
     "ORDER_CODE",
-    "ORDER_TOOLS",
-    "POLICY_CATEGORIES",
-    "PRODUCT_CATEGORIES",
     "TOOLS",
     "TOOL_NAMES",
-    "InvalidToolArguments",
-    "audit_outcome",
     "normalize_order_code",
-    "safe_arguments",
-    "validate_arguments",
+    "normalize_spoken_order_codes",
+    "normalize_spoken_terms",
 ]

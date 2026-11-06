@@ -1,0 +1,35 @@
+# PostgreSQL + Redis for VoxCare AI (docs/DATA_LAYER.md).
+#   docker compose up -d
+#   DATABASE_URL=postgresql://voxcare:voxcare@127.0.0.1:5432/voxcare
+#   REDIS_URL=redis://127.0.0.1:6379/0
+# Local demo credentials only; both ports bind to 127.0.0.1.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: voxcare
+      POSTGRES_PASSWORD: voxcare
+      POSTGRES_DB: voxcare
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - voxcare-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voxcare -d voxcare"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  voxcare-pg:

@@ -63,6 +63,8 @@ CLIENT_PLAYBACK_STARTED = "playback_started"
 CLIENT_PLAYBACK_FAILED = "playback_failed"
 CLIENT_STOP = "stop"
 CLIENT_RESET = "reset"
+# Design-defined control message (guide §9.1): {"event": "BARGE_IN_TRIGGERED", "interrupted_epoch": 7}.
+CLIENT_BARGE_IN_TRIGGERED = "BARGE_IN_TRIGGERED"
 
 CLIENT_MESSAGE_TYPES: tuple[str, ...] = (
     CLIENT_START,

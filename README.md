@@ -2,171 +2,101 @@
 
 [![CI](https://github.com/KoangWy/VoxCareAI_Prototype/actions/workflows/ci.yml/badge.svg)](https://github.com/KoangWy/VoxCareAI_Prototype/actions/workflows/ci.yml)
 
-English, browser-based **voice customer-support prototype** for the fictional electronics retailer **VoxCom**. A caller speaks in the browser; the server transcribes the speech, decides when the caller has finished their turn, lets a language model choose read-only lookup tools, and speaks back an answer that is rendered only from tool results.
+English, browser-based **voice customer-support prototype** for the fictional electronics retailer **VoxCom**, built to the P1 implementation specification (`docs/IMPLEMENTATION_SPEC.md` in the thesis repository, design `research/42_voxcare_p1_detailed_design.md`). A caller speaks in the browser; the server transcribes the speech, decides when the caller has finished their turn, lets a language model propose read-only tool calls, runs them through an authorizing middleware, and speaks back a line rendered only from tool results — verbatim from the design wherever the design fixes the wording.
 
-Every customer, order, shipment, product, voucher and policy clause is fictional. The session is bound server-side to the simulated customer `CUST-001`; this is a demo, not production authentication.
+Every customer, order, shipment, product, voucher and policy clause is fictional. Caller verification is simulated by binding a fixture customer (OPD-04); production needs an OTP challenge.
 
 ## Features
 
-- **Streaming voice loop** — browser microphone (Web Audio, AudioWorklet) → 16 kHz PCM over WebSocket → streaming ASR → turn decision → LLM tool planning → streaming TTS back to the browser.
-- **Judged end-of-turn control** — a deterministic baseline, TypeSafe Jev, or an OpenRouter decisions model answers four questions (turn complete, holding the floor, addressed to the assistant, taking the floor). Code owns every action: silence alone never commits a turn, side-talk never reaches the assistant, and a stuck turn ends in an explicit caller choice (finish / try again / request support).
-- **Grounded, read-only answers** — seven allowlisted tools: order lookup, shipment tracking, policy retrieval, catalog search, product comparison, voucher quote, and support-request recording. The model only plans tool calls; the spoken text is rendered from the tool records, so it cannot invent an order status, price, ETA or policy term.
-- **Optional semantic barge-in** — speak over the assistant: a backchannel ("uh-huh") keeps the reply playing, a real floor grab ("wait, stop") interrupts it.
-- **Two provider stacks, one contract** — the design providers (Deepgram, OpenAI, ElevenLabs) or a fully local demo stack (Vosk, Piper, any OpenAI-compatible gateway), selected by environment variables only.
-- **Honest observability** — per-session trace (`GET /api/sessions/{id}/trace`), audit rows for tool calls and turn recovery, and no latency claim that the system cannot measure.
+- **Streaming voice loop** — browser microphone (AudioWorklet) → 16 kHz PCM over an authenticated WebSocket (`VoxCare-Session-Token`, HS256 JWT) → streaming ASR → judged end-of-turn control → LLM tool planning → streaming TTS.
+- **Three-tier data layer** — PostgreSQL (DDL §4.1, seed fixtures §17, append-only `audit_log`), Redis (session TTL 1800 s, pending action 300 s, idempotency index, handoff packet, throttle window) and ChromaDB (`voxcom_policy_v1`, 9 fictional clauses, cosine).
+- **Eight scope-guarded tools** — the design's seven read/record tools plus `list_customer_orders` (gap G-3). Every proposal passes the tool middleware: allowlist, untrusted-input stripping, a pre-invocation validator, the verified-session gate, the FR-SEC-01 anti-scraping throttle, one retry on timeout only, and an audit row. The model has no database access.
+- **Verbatim spoken lines** — every line of the design's error matrices, the handoff script, the open-policy-decision fallbacks (OPD-01…06), withdrawal and replay lines lives in `domain/copy.py`.
+- **Proposals behind flags (default on)** — FR-AUTH-01 phone-number verification sub-dialogue, FR-AUTH-02 scope refusal with audit, FR-SEC-01 throttle.
+- **Bounded after-sales diagnosis** (≤ 3 turns), **context-packaged human handoff** (audit + `agent_activity` QUEUED + Redis packet; never a transfer), **interrupted-conversation resume** question (UC-23).
+- **Guarded-write library** (future-only) — Preview → Confirm (1–2 steps) → Revalidate (OCC) → Execute → Audit, withdrawal cases A/B/C, reversal with a new key, replay by key K1 — tested against a fake VoxCom OMS. In the demo, writes are previewed and recorded for VoxCom, never executed.
+- **Session activity log** — the operator view shows, for every turn, how it was handled (fixed rule or model plan), each tool call with the checks it passed or failed, the audit rows it wrote (same `audit_id` as in PostgreSQL), what changed, and the reply; masked as stored, downloadable as Markdown. No model names or timings.
+- **Observability** — audit rows in the design's golden format, OpenTelemetry spans per turn (`turn`, `llm`, `tool:<name>`, `tts`, T1…T6 events), JSON logs masked for PII, `/healthz` with a WSS handshake probe.
 
 ## How it works
 
 ```text
-Browser (static/)                         Server (src/voxcare/)
-─────────────────                         ─────────────────────
-mic → AudioWorklet → resample 16 kHz ──►  voice/connection  ──► ASR (Deepgram | Vosk)
-local VAD: vad_speech_start / vad_quiet ► voice/evaluate    ──► turns/ judge (baseline | Jev | OpenRouter)
-                                                 │ COMMIT
-                                                 ▼
-                                          session/boundary  ──► LLM plans tools (OpenAI | gateway, Anthropic fallback)
-                                                 │               └► read-only tools over domain/ fixtures
-                                                 ▼ grounded text
-speaker ◄── PCM16 playback ◄───────────── voice/dispatch    ──► TTS (ElevenLabs | Piper)
+Browser (static/)                        Server (src/voxcare/)
+mic → AudioWorklet → 16 kHz PCM ──WSS──► voice/connection (token check) ──► ASR (Deepgram | Vosk)
+local VAD ──────────────────────────────► turns/ judge (baseline | Jev | OpenRouter) ── COMMIT
+                                                   ▼
+                                          session/boundary ─ PII mask ─► session/dialogue
+                                                   │  model proposes tools (OpenAI → Anthropic failover | keyword)
+                                                   ▼
+                                          middleware/tool_middleware ─► domain/services ─► PostgreSQL · Redis · Chroma
+                                                   ▼ envelope → session/render (domain/copy.py lines)
+speaker ◄── PCM16 playback ◄────────────── voice/dispatch ──► TTS (ElevenLabs | Piper)
 ```
 
-Typed text (`POST /api/sessions/{id}/turns`) goes through the same session boundary but skips the turn judge, since typed text has no microphone timing. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full flow.
+## Quick start (Windows, macOS, Linux)
 
-## Quick start
-
-Requirements: Python 3.12–3.14, [uv](https://docs.astral.sh/uv/), a current Chromium or Safari browser, and Node.js 22+ only for the frontend tests.
+Requirements: Python 3.12 (3.13/3.14 work without the embedded database), [uv](https://docs.astral.sh/uv/), a current Chromium-based browser, Node.js 22+ only for the frontend tests.
 
 ```sh
-git clone https://github.com/KoangWy/VoxCareAI_Prototype.git
-cd VoxCareAI_Prototype
-uv sync --all-groups          # app + dev tools + the offline demo group (vosk, piper-tts)
-cp .env.example .env          # then fill in the stack you want (below)
+uv sync --all-groups              # app + dev tools + demo speech (vosk, piper) + embedded PostgreSQL (localdb)
+cp .env.example .env              # PowerShell: Copy-Item .env.example .env
+uv run python scripts/init_db.py  # creates and seeds the database, builds the policy index
 uv run uvicorn voxcare.app:app --app-dir src --host 127.0.0.1 --port 8000
 ```
 
-Open <http://127.0.0.1:8000>, allow microphone access, and press the microphone button. Without any provider configured the page still loads, reports which providers are missing, and never fakes an answer.
+Open <http://127.0.0.1:8000>. The first start downloads Chroma's `all-MiniLM-L6-v2` embedding model (about 80 MB) once.
 
-### Option A — local demo stack (no speech-provider keys)
+**Choosing the stores** (all in `.env`; details in [docs/DATA_LAYER.md](docs/DATA_LAYER.md)):
 
-Speech runs locally; only the LLM (and, optionally, the turn judge) needs a key.
+| Setup | What to set |
+| --- | --- |
+| Docker Desktop | `docker compose up -d`, then `DATABASE_URL=postgresql://voxcare:voxcare@127.0.0.1:5432/voxcare` and `REDIS_URL=redis://127.0.0.1:6379/0` |
+| No Docker (Python 3.12) | leave `DATABASE_URL` empty: an embedded PostgreSQL (`pgserver`) runs in `data/pg`; leave `REDIS_URL` empty: an in-process fakeredis server |
+| No database at all | `VOXCARE_DATA_BACKEND=memory` (same seed rows in process memory; for quick UI checks) |
 
-```sh
-uv run --group demo python scripts/fetch_demo_models.py   # Vosk + Piper voice into models/ (~130 MB, git-ignored)
-```
+**Choosing the conversation model**: `VOXCARE_CONVERSATION_PROVIDER=anthropic` with `ANTHROPIC_API_KEY`; `openai` with `OPENAI_API_KEY` (+ Anthropic as sticky fallback); or `keyword` — an offline deterministic planner (not an LLM) for demos without credits.
 
-Then in `.env`:
-
-```sh
-VOXCARE_ASR_PROVIDER=vosk
-VOXCARE_VOSK_MODEL=models/vosk-model-small-en-us-0.15
-VOXCARE_TTS_PROVIDER=piper
-VOXCARE_PIPER_MODEL=models/en_US-lessac-medium.onnx
-VOXCARE_OPENAI_TRANSPORT=chat
-VOXCARE_OPENAI_BASE_URL=https://opencode.ai/zen/go/v1   # any OpenAI-compatible gateway
-VOXCARE_OPENAI_MODEL=deepseek-v4.1-flash                # a tool-calling model id from the gateway's /v1/models
-OPENAI_API_KEY=<gateway key>
-# Optional judged turns via OpenRouter:
-# VOXCARE_TURN_MODE=openrouter
-# OPENROUTER_API_KEY=<openrouter key>
-```
-
-### Option B — design provider set
-
-```sh
-DEEPGRAM_API_KEY=...          # Nova-2 streaming ASR
-OPENAI_API_KEY=...            # Responses API, model gpt-6-luna
-ANTHROPIC_API_KEY=...         # optional sticky fallback (claude-haiku-5-5)
-ELEVENLABS_API_KEY=...        # Flash v2.5 streaming TTS
-ELEVENLABS_VOICE_ID=...
-# VOXCARE_TURN_MODE=jev + TYPESAFE_API_KEY=... for TypeSafe Jev turn decisions
-```
-
-## Configuration
-
-All settings are environment variables, read from `.env` at startup; [`.env.example`](.env.example) documents every one. They are validated in one place (`src/voxcare/config.py`): an invalid value fails session creation with the variable name (`TURN_CONFIG_INVALID:<VAR>` / `PROVIDER_CONFIG_INVALID:<VAR>`) instead of failing mid-call, and `GET /api/config` reports the problem without exposing credentials.
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `VOXCARE_ASR_PROVIDER` | `deepgram` | `deepgram` or `vosk` (+ `VOXCARE_VOSK_MODEL`) |
-| `VOXCARE_TTS_PROVIDER` | `elevenlabs` | `elevenlabs` or `piper` (+ `VOXCARE_PIPER_MODEL`) |
-| `VOXCARE_OPENAI_TRANSPORT` | `responses` | `responses` (OpenAI Responses API) or `chat` (chat-completions gateway) |
-| `VOXCARE_OPENAI_MODEL`, `VOXCARE_OPENAI_BASE_URL` | `gpt-6-luna`, — | Conversation model and endpoint |
-| `VOXCARE_ANTHROPIC_MODEL` | `claude-haiku-5-5` | Fallback model after two consecutive retryable primary failures |
-| `VOXCARE_TURN_MODE` | `baseline` | `baseline`, `jev` (TypeSafe), or `openrouter` |
-| `VOXCARE_JEV_MODEL` | per mode | `jev-latest` or `inception/mercury-decide` |
-| `VOXCARE_JEV_TIMEOUT_MS`, `VOXCARE_HOLD_DEADLINE_MS` | 300 / 3000 (OpenRouter: 2500 / 9000) | Judge budget and HOLD deadline |
-| `VOXCARE_BARGE_IN` | `off` | `off` (half-duplex) or `semantic` |
-| `VOXCARE_LOG_LEVEL` | `INFO` | Python log level |
-
-Turn thresholds and silence windows (`VOXCARE_TURN_COMPLETE_THRESHOLD`, `VOXCARE_EOS_*`, …) are documented in [docs/TURN_CONTROL.md](docs/TURN_CONTROL.md). Variables from the host that are not prefixed `VOXCARE_` (for example `OPENAI_MODEL`) are ignored on purpose.
+**Speech**: `uv run --group demo python scripts/fetch_demo_models.py` downloads Vosk + Piper for the local stack (`VOXCARE_ASR_PROVIDER=vosk`, `VOXCARE_TTS_PROVIDER=piper`); Deepgram + ElevenLabs keys select the design providers.
 
 ## Using the demo
 
-Try questions such as:
+| Ask (verified caller) | Spec scenario | What you hear |
+| --- | --- | --- |
+| "Can you check the delivery status of my order ORD-1002 and my earlier purchases?" | 1 | "Order ORD-1002 is in transit with GHN. Estimated delivery date: 2026-10-15. Your account also shows ORD-1003, delivered on October 2." |
+| "Please check order ORD-2002." | 3 | refusal + `AUTH_SCOPE_VIOLATION` audit, nothing leaked |
+| "What is the warranty period for a Samsung refrigerator compressor and can I return it if it has a manufacturing defect?" | 4 | Clause 3.1 and 4.1, conditional on technician certification |
+| "Do you accept trade-ins for 10-year-old microwave ovens with cash back?" | 5 | out-of-domain admission, no fee or timeline |
+| "Compare the Samsung and the LG 55-inch TV, and check if voucher VOXCOM_500K applies." | 7 | "Samsung 55: 11,490,000 VND. LG 55: 18,990,000 VND. With VOXCOM_500K the Samsung is 10,990,000 VND." |
+| "My washer stops during spin cycle and displays error E4." → answer two questions → "exchange" | 8 | conditional eligibility; request recorded, no RMA ticket |
+| "Let me speak to a human supervisor right now!" | 9 | §12 line with ticket `TICK-CS-…`; no transfer claim |
+| "Where is my package?" → "ORD-1001" | 17 | "Could you please tell me your order code?" → null-ETA line |
+| "Move the delivery of ORD-1001 to next Monday." → "Yes" | 11 | preview line, then "recorded … nothing has changed yet" |
+| "When will I get my refund?" | OPD-02 | the fallback line only |
 
-| Ask | What happens |
-| --- | --- |
-| "Where is order ORD-1002 and when will it arrive?" | Order + shipment lookup: shipped with GHN, carrier ETA 2026-10-15 |
-| "What's the status of ORD-1001?" | Confirmed; no shipment or ETA yet |
-| "Check order ORD-2002" | Refused: belongs to another (simulated) customer |
-| "Do you have Samsung TVs under 15 million VND?" | Catalog search |
-| "Compare TV-SAM-55 and TV-LG-55" | Side-by-side on recorded attributes only |
-| "Can I use VOXCOM_500K on a 12,000,000 VND TV?" | Voucher quote (read-only; nothing is changed) |
-| "What is the return window for my LG TV?" | Fictional policy clauses with their IDs |
-| "I want to talk to a person" | Support request recorded; no live transfer happens |
-
-Seeded orders: `ORD-1001` confirmed, `ORD-1002` shipped, `ORD-1003` delivered, `ORD-2002` another customer, `ORD-9999` does not exist. The server accepts variants like `ord 1002` or `ORD1002`, and the model is instructed to convert spelled-out codes from speech recognition ("o r d one zero zero two") to the `ORD-####` form.
-
-**Reset session** starts a fresh simulated session and fences every late result from the old one. The text box under the conversation sends the same request path without the microphone.
+Choose **Unverified caller** in the side panel for Scenario 2: the bot asks for the phone number used at checkout (demo: `0900 000 001`), binds the customer, then answers. The support button records a handoff the same way.
 
 ## Development
 
 ```sh
-uv run pytest -q                          # backend unit + WebSocket tests (fakes only, no network)
+uv run pytest -q                                      # 400+ tests (41 need the real stores, 1 the embedded PostgreSQL); manual script: docs/MANUAL_TESTS.md
 uv run ruff check . && uv run ruff format --check .
-node --test 'tests/frontend/*.test.mjs'   # headless frontend tests (or: npm test)
-node scripts/check_static.mjs             # DOM ids / imports / static-asset constraints
+npm test && node scripts/check_static.mjs             # frontend tests and static checks
 ```
 
-The test suite clears every `VOXCARE_*` variable and provider key before each test, so it never reaches a real provider. Live checks against real providers are separate scripts; see [docs/TESTING.md](docs/TESTING.md).
-
-## Project structure
-
-```text
-src/voxcare/
-  app.py            ASGI entry point (voxcare.app:app)
-  config.py         every VOXCARE_* setting, validated
-  contracts.py      shared dataclasses and the DialogueProvider protocol
-  privacy.py        pattern-based PII mask for external-provider edges
-  trace.py          bounded per-session event ledger
-  http/             FastAPI app factory and REST routes
-  voice/            WebSocket voice flow (connection, ASR fan-in, evaluation, dispatch, wire protocol)
-  turns/            turn controller and judge adapters (baseline, TypeSafe Jev, OpenRouter)
-  session/          session boundary, tool registry, grounded answer rendering
-  providers/        ASR, LLM, and TTS adapters + factories
-  domain/           fictional OMS fixtures and policy corpus
-static/             browser client (plain ES modules, no build step)
-tests/              pytest suite; tests/frontend/ holds the node tests
-scripts/            model download, live end-to-end harnesses, evaluation tooling
-evaluation/         controlled turn-decision case definitions
-docs/               architecture, protocol, turn control, frontend, testing, policy sources
-```
+Tests run on the in-memory twin by default. Set `VOXCARE_TEST_DATABASE_URL` and `VOXCARE_TEST_REDIS_URL` to run the acceptance, audit and security suites against real PostgreSQL and Redis too (CI does). See [docs/TESTING.md](docs/TESTING.md).
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md) — module map, request and voice flows, provider matrix
-- [Voice protocol](docs/VOICE_PROTOCOL.md) — the authoritative browser ↔ server WebSocket contract
-- [Turn control](docs/TURN_CONTROL.md) — the judged end-of-turn state machine, budgets, thresholds, evidence
-- [Frontend](docs/FRONTEND.md) — browser modules, VAD, playback, recovery, manual acceptance checklist
-- [Testing](docs/TESTING.md) — automated checks, live harnesses, evaluation workflow
-- [Policy sources](docs/POLICY_SOURCES.md) — the fictional policy corpus and its provenance
+- [Spec conformance](docs/SPEC_CONFORMANCE.md) — the 17 scenarios, NFR status, gap decisions G-1…G-14, deviations
+- [Architecture](docs/ARCHITECTURE.md) · [Data layer](docs/DATA_LAYER.md) · [Policy retrieval and G-10 calibration](docs/POLICY_RETRIEVAL.md)
+- [Voice protocol](docs/VOICE_PROTOCOL.md) · [Turn control](docs/TURN_CONTROL.md) · [Frontend](docs/FRONTEND.md) · [Testing](docs/TESTING.md) · [Policy sources](docs/POLICY_SOURCES.md)
 
 ## Limitations
 
-- English only; simulated identity; fictional, read-only business data. No business record can be changed and no live human transfer exists.
-- The local demo stack is a documented deviation from the design provider set. Latency and accuracy are **not measured** on either stack; the design targets (e.g. 755 ms time-to-first-audio, ≥85 % accuracy) are not claimed.
-- PII masking at the provider edges is pattern-based and incomplete; stored history and live transcripts keep the caller's raw words. Use fictional inputs only.
-- Semantic barge-in is verified with the headless live harness, not with a physical microphone, so it stays off by default.
+- English only (Phase 1). Caller verification is simulated (OPD-04). Writes are never executed in the demo.
+- No NFR is measured by this repository yet: the scripts in `scripts/` (`nfr_latency_report.py`, `uptime_probe.py`, `load_test.k6.js`, `pii_log_scan.py`) produce the evidence when run against a live setup.
+- The policy threshold is calibrated for the chosen embedding model (0.32 for all-MiniLM-L6-v2, measured on 50 labeled queries); the design's 0.70 belongs to an unnamed model (G-10).
+- PII masking is pattern- and dictionary-based (phones, addresses, fixture names), not a general PII detector; use fictional inputs.
 
 ## License
 

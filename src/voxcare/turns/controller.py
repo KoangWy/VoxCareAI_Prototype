@@ -412,6 +412,12 @@ class TurnController:
                 "turn_epoch": turn_epoch,
             },
             now_ms=now,
+            response={
+                "turn_state": "FALLBACK_RESOLVED",
+                "resolution": action,
+                "business_confirmation": False,
+                "live_transfer": False,
+            },
         )
         if action == "CALLER_RETRY":
             next_episode = _Episode(
@@ -519,6 +525,13 @@ class TurnController:
                 "turn_epoch": episode.turn_epoch,
             },
             now_ms=now,
+            # D§3.5 golden row (audit_id ...440008): the degraded state keeps transcript, epoch and live mic.
+            response={
+                "turn_state": "DEGRADED/NEEDS_CLARIFICATION",
+                "transcript_retained": True,
+                "microphone_live": True,
+                "prompt_when": "local_vad_quiet",
+            },
         )
         return self._decision(episode, "DEGRADED", reason, now, audit_event=event, scores=scores)
 
@@ -582,6 +595,7 @@ def _audit_event(
     outcome_status: str,
     payload: Mapping[str, Any],
     now_ms: int,
+    response: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any]:
     timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     return {
@@ -594,6 +608,6 @@ def _audit_event(
         "action_status": "Success",
         "outcome_status": outcome_status,
         "request_payload_json": dict(payload),
-        "response_payload_json": {"observed_at_monotonic_ms": now_ms},
+        "response_payload_json": {**dict(response or {}), "observed_at_monotonic_ms": now_ms},
         "timestamp": timestamp,
     }

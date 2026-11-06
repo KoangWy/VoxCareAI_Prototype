@@ -21,8 +21,10 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..config import TurnSettings, load_provider_settings, load_turn_settings
-from ..domain.seed import SeedOMS
+from ..observability.logging import configure_logging
+from ..observability.otel import setup_tracing
 from ..providers import conversation_factory_from_env
+from ..runtime import build_runtime
 from ..session import SessionBoundary
 from ..turns import BaselineTurnJudge, TurnController
 from ..turns.jev import TypeSafeJevJudge
@@ -33,12 +35,12 @@ STATIC_DIR = APP_ROOT / "static"
 MAX_REQUEST_BYTES = 64 * 1024
 
 load_dotenv(APP_ROOT / ".env", override=False)
-logging.basicConfig(
+configure_logging(
     level=os.getenv("VOXCARE_LOG_LEVEL", "INFO").strip().upper() or "INFO",
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    fmt=os.getenv("VOXCARE_LOG_FORMAT", "json").strip().lower() or "json",
 )
-
-oms = SeedOMS()
+setup_tracing()
+logger = logging.getLogger("voxcare.http")
 
 # OpenRouter judges hold an httpx connection pool but no per-session state, so
 # sessions share one judge per (model, budget); shutdown closes them.
@@ -64,14 +66,23 @@ def build_turn_controller(settings: TurnSettings | None = None) -> TurnControlle
 boundary = SessionBoundary(
     dialogue=None,
     dialogue_factory=conversation_factory_from_env,
-    oms=oms,
     turn_controller_factory=build_turn_controller,
 )
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    yield
+    runtime = await build_runtime()
+    boundary.attach(runtime)
+    for note in runtime.notes:
+        logger.info("data layer: %s", note)
+    try:
+        yield
+    finally:
+        detached = boundary.detach()
+        if detached is not None:
+            with contextlib.suppress(Exception):
+                await detached.aclose()
     judges = list(_openrouter_judges.values())
     _openrouter_judges.clear()
     for judge in judges:

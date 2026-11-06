@@ -45,8 +45,12 @@ _STREET_ADDRESS = re.compile(
 )
 _CARD_CANDIDATE = re.compile(r"(?<!\d)(?:\d[ .-]*){13,19}(?!\d)")
 _REFERENCE_CODES = re.compile(
-    r"\b(?:ORD|SHIP|SES-VOX|ACT|RMA|EVT|ITEM|TICK-CS|CHK-POL|POL-[A-Z]+|TV|WM|RF)-[A-Z0-9-]+\b"
+    r"\b(?:ORD|SHIP|SES-VOX|SES|ACT|RMA|EVT|ITEM|TICK-CS|HND|CUST|INST|VAR|PROD|PROMO|CHK-POL|POL-[A-Z]+|TV|WM|RF)"
+    r"-[A-Z0-9-]+\b"
     r"|\bGHN-VN-\d+\b|\bGHTK-VN-\d+\b|\bVTP-VN-\d+\b|\bVOXCOM_[A-Z0-9]+\b"
+    r"|\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"  # UUIDs (audit ids, idempotency keys)
+    r"|\b[0-9a-f]{32}\b",  # 32-char hex order ids
+    re.IGNORECASE,
 )
 
 

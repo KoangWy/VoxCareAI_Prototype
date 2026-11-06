@@ -1,48 +1,110 @@
 // Shared sample-rate contract helpers: 16 kHz mono PCM16 both directions.
-// A gentle single-pole low-pass runs before decimation (plain box averaging
-// would alias high-frequency energy down into the speech band).
+// Capture is band-limited with a windowed-sinc FIR before decimation: a weak
+// filter lets 8-24 kHz energy (sibilants, fan or electrical whine) fold back
+// into the 0-8 kHz speech band that the recogniser listens to.
 
 export const TARGET_SAMPLE_RATE = 16_000;
 
+// Anti-alias design, in Hz at the 16 kHz output: the -6 dB point and the
+// transition width. Passband to ~6.6 kHz, stopband from ~8.2 kHz (Blackman
+// window, about -74 dB), so nothing above 8.2 kHz lands in the speech band.
+const CUTOFF_HZ = 7_400;
+const TRANSITION_HZ = 1_600;
+const MAX_PHASES = 2_048;
+
+function gcd(a, b) {
+  let x = Math.abs(a);
+  let y = Math.abs(b);
+  while (y) [x, y] = [y, x % y];
+  return x;
+}
+
+function sinc(x) {
+  if (x === 0) return 1;
+  const px = Math.PI * x;
+  return Math.sin(px) / px;
+}
+
+/**
+ * One normalised kernel per fractional phase. Tap `m` (0..2H) weighs the
+ * input sample `m` positions before the newest one used; `frac` is where the
+ * output instant falls between input samples.
+ */
+function buildKernels(rate) {
+  const scale = Math.min(rate, TARGET_SAMPLE_RATE) / TARGET_SAMPLE_RATE;
+  const fc = (CUTOFF_HZ * scale) / rate; // cycles per input sample
+  const half = Math.ceil((2.75 * rate) / (TRANSITION_HZ * scale)); // Blackman: N ~ 5.5 / transition
+  const exactPhases = TARGET_SAMPLE_RATE / gcd(rate, TARGET_SAMPLE_RATE);
+  const phases = Math.min(exactPhases, MAX_PHASES);
+  const kernels = [];
+  for (let p = 0; p < phases; p += 1) {
+    const frac = p / phases;
+    const taps = new Float64Array(2 * half + 1);
+    let sum = 0;
+    for (let m = 0; m <= 2 * half; m += 1) {
+      const t = m - half + frac; // distance from the kernel centre, in input samples
+      const w = 0.42 + 0.5 * Math.cos((Math.PI * t) / (half + 1)) + 0.08 * Math.cos((2 * Math.PI * t) / (half + 1));
+      taps[m] = 2 * fc * sinc(2 * fc * t) * w;
+      sum += taps[m];
+    }
+    for (let m = 0; m <= 2 * half; m += 1) taps[m] /= sum; // unity DC gain at every phase
+    kernels.push(taps);
+  }
+  return { half, phases, kernels };
+}
+
 /**
  * Streaming resampler for Float32 mono capture frames at `inputRate` to
- * 16 kHz Int16 PCM. The anti-alias filter state and the fractional read
- * position carry across `process()` calls, so splitting a signal into
- * AudioWorklet-sized frames (128 samples) neither drops samples nor clicks.
+ * 16 kHz Int16 PCM. Output `k` is emitted on the same schedule as plain
+ * decimation (after input sample ceil((k+1)·rate/16000) - 1), delayed by
+ * the filter's half-length (~1.7 ms). Filter history and position carry
+ * across `process()` calls, so AudioWorklet-sized frames (128 samples)
+ * give exactly the same output as one call over the whole signal.
  */
 export function createResampler(inputRate) {
   const rate = Number.isFinite(inputRate) && inputRate > 0 ? inputRate : TARGET_SAMPLE_RATE;
-  const ratio = rate / TARGET_SAMPLE_RATE;
-  const cutoff = 0.45 * (TARGET_SAMPLE_RATE / 2) / (rate / 2);
-  const alpha = 1 - Math.exp(-2 * Math.PI * Math.min(0.45, Math.max(0.01, cutoff)));
-  // Positions are counted in 1/16000 s (input samples step by 16000, output
-  // samples by the input rate) so integer rates never accumulate float error.
-  let y = 0;
-  let consumed = 0;
-  let nextTarget = rate;
+  if (rate === TARGET_SAMPLE_RATE) {
+    return {
+      inputRate: rate,
+      process(samples) {
+        if (!samples || !samples.length) return new Int16Array(0);
+        const pcm = new Int16Array(samples.length);
+        for (let i = 0; i < samples.length; i += 1) pcm[i] = floatToInt16(samples[i]);
+        return pcm;
+      },
+    };
+  }
+  const { half, phases, kernels } = buildKernels(rate);
+  const span = 2 * half + 1;
+  let history = null; // the last `span` input samples
+  let received = 0; // input samples seen so far
+  let k = 0; // next output index
   return {
     inputRate: rate,
     process(samples) {
       if (!samples || !samples.length) return new Int16Array(0);
-      if (rate === TARGET_SAMPLE_RATE) {
-        const pcm = new Int16Array(samples.length);
-        for (let i = 0; i < samples.length; i += 1) pcm[i] = floatToInt16(samples[i]);
-        return pcm;
-      }
-      const out = new Int16Array(Math.ceil(samples.length / ratio) + 1);
+      if (history === null) history = new Float32Array(span).fill(samples[0]); // edge-extend the start
+      const work = new Float32Array(span + samples.length);
+      work.set(history, 0);
+      work.set(samples, span);
+      const base = received - span; // absolute input index of work[0]
+      received += samples.length;
+      const out = new Int16Array(Math.ceil((samples.length * TARGET_SAMPLE_RATE) / rate) + 2);
       let count = 0;
-      for (let i = 0; i < samples.length; i += 1) {
-        y += alpha * (samples[i] - y);
-        consumed += TARGET_SAMPLE_RATE;
-        while (consumed >= nextTarget) {
-          out[count] = floatToInt16(y);
-          count += 1;
-          nextTarget += rate;
-        }
+      for (;;) {
+        const num = (k + 1) * rate;
+        const newest = Math.ceil(num / TARGET_SAMPLE_RATE) - 1; // input index that releases output k
+        if (newest >= received) break;
+        const frac = (num % TARGET_SAMPLE_RATE) / TARGET_SAMPLE_RATE;
+        const taps = kernels[Math.round(frac * phases) % phases];
+        const end = Math.floor(num / TARGET_SAMPLE_RATE) - 1 - base; // newest tap, in work[]
+        let acc = 0;
+        for (let m = 0; m < span; m += 1) acc += taps[m] * work[end - m];
+        out[count] = floatToInt16(acc);
+        count += 1;
+        k += 1;
       }
-      // Rebase so the counters stay small however long the session runs.
-      nextTarget -= consumed;
-      consumed = 0;
+      history = work.slice(work.length - span);
       return out.subarray(0, count);
     },
   };
@@ -58,11 +120,17 @@ export function resampleTo16k(samples, inputRate) {
 }
 
 /**
- * Collects resampled PCM into fixed-size batches (default 320 samples = 20 ms
- * at 16 kHz) so the socket carries a steady frame size instead of one tiny
- * message per AudioWorklet callback.
+ * Design uplink frame (guide §3.2 ASR_CHUNK_BYTES / ASR_CHUNK_MS): 256 samples
+ * = 512 bytes of PCM16 = 16 ms at 16 kHz.
  */
-export function createPcmBatcher(samplesPerBatch = 320) {
+export const UPLINK_FRAME_SAMPLES = 256;
+
+/**
+ * Collects resampled PCM into fixed-size batches (default 256 samples = 512
+ * bytes = 16 ms at 16 kHz) so the socket carries a steady frame size instead of
+ * one tiny message per AudioWorklet callback.
+ */
+export function createPcmBatcher(samplesPerBatch = UPLINK_FRAME_SAMPLES) {
   let buffer = new Int16Array(samplesPerBatch);
   let filled = 0;
   return {

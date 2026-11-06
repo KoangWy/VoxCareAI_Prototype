@@ -1,15 +1,6 @@
-"""Fictional, read-only VoxCom business data: seeded OMS fixtures and the policy corpus."""
+"""VoxCom business domain: canonical enums, pure rules, spoken copy, the injected clock, and services.
 
-from __future__ import annotations
-
-from .policy import PolicyEvidence, PolicyEvidenceResult, PolicyFilters, PolicyRetriever, retrieve_policy_clauses
-from .seed import SeedOMS
-
-__all__ = [
-    "PolicyEvidence",
-    "PolicyEvidenceResult",
-    "PolicyFilters",
-    "PolicyRetriever",
-    "SeedOMS",
-    "retrieve_policy_clauses",
-]
+``rules.py`` holds pure business rules and imports no provider, storage or
+framework code (NFR-07). Services in ``services/`` reach data only through the
+repository interfaces of :mod:`voxcare.storage`.
+"""

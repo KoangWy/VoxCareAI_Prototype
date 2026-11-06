@@ -128,7 +128,9 @@ class TurnConfigApiTests(unittest.TestCase):
             try:
                 session = client.post("/api/sessions").json()
                 turn = client.post(
-                    f"/api/sessions/{session['session_id']}/turns", json={"text": "Track ORD-1002"}
+                    f"/api/sessions/{session['session_id']}/turns",
+                    headers={"VoxCare-Session-Token": session["token"]},
+                    json={"text": "Track ORD-1002"},
                 ).json()
             finally:
                 if old_mode is None:

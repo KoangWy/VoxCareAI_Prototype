@@ -1,6 +1,6 @@
 # Architecture
 
-VoxCare AI is a single FastAPI process that serves a static browser client, a small REST API, and one WebSocket per voice session. All business data is fictional and read-only; the only shared mutable state is the in-memory session registry.
+VoxCare AI is one FastAPI process that serves a static browser client, a REST API and one authenticated WebSocket per voice session. Business data lives in PostgreSQL, volatile session state in Redis, and the policy corpus in Chroma ([DATA_LAYER.md](DATA_LAYER.md)). The language model only proposes tool calls; every spoken line is rendered from tool results.
 
 ## Module map
 
@@ -8,58 +8,80 @@ VoxCare AI is a single FastAPI process that serves a static browser client, a sm
 src/voxcare/
   app.py               ASGI entry point: `voxcare.app:app` and the process-wide `boundary`
   config.py            every VOXCARE_* variable, parsed and validated (ConfigError names the variable)
+  runtime.py           builds the stores and services from DataSettings; describe() and health()
   contracts.py         PlannedToolCall, ToolOutcome, SessionView, TurnResult, DialogueProvider
-  privacy.py           deterministic PII mask applied at external-provider edges
+  privacy.py           deterministic mask applied at external-provider edges (LLM, judge, TTS)
   trace.py             bounded per-session event ledger (500 events, oldest dropped first)
 
-  http/
-    bootstrap.py       loads .env, builds the app, the SessionBoundary and per-session turn controllers
-    routes.py          /api/config, /healthz, /api/sessions/... (typed turns, trace, handoff, reset)
-    schemas.py         request bodies
+  domain/              pure business layer (no I/O in rules.py)
+    enums.py           every enum of G§5
+    rules.py           scope, order FSM, write lifecycle, voucher, return window, diagnosis, reversal
+    copy.py            every verbatim spoken line (matrices, handoff, OPD-01…06, writes)
+    clock.py           FixedClock (demo anchor 2026-10-14 09:42 +07:00) and SystemClock
+    services/          orders, shipment, customer orders, policy, catalog, promotion, handoff, writes; envelope
+    data/policies.json the 9-clause fictional VoxCom policy corpus
 
-  voice/               one WebSocket voice session
-    protocol.py        every wire message name and error code (machine copy of VOICE_PROTOCOL.md)
-    connection.py      socket loop + one handler per client message type
-    asr_events.py      provider transcripts → versioned active utterance → transcript_* broadcasts
-    evaluate.py        single evaluation slot; judge → COMMIT / HOLD / DEGRADED routing
-    turn_control.py    turn_control emission, HOLD-deadline watcher, recovery offers
-    dispatch.py        committed turn → `turn` result → streamed TTS audio; barge-in interrupt
-    state.py           VoiceState (per-connection buffers, fences, timers)
+  storage/
+    schema.sql, seed.py    DDL G§4.1 and the G§17 fixtures
+    db.py                  Repository protocol: PostgresRepository (psycopg 3) and MemoryRepository
+    redis_store.py         sessions, pending actions + idempotency index, handoff packets, throttle window
+    vector_store.py        Chroma voxcom_policy_v1; embeddings.py: MiniLM or hashing embedder
+    fake_oms.py            fake VoxCom OMS for the guarded-write library
 
-  turns/
-    controller.py      TurnController, TurnConfig, BaselineTurnJudge, episode/decision model
-    prompts.py         shared judge state and the four Noul questions
-    jev.py             TypeSafe Jev adapter (SDK)
-    openrouter.py      OpenRouter Decisions adapter (HTTP, same questions)
+  middleware/
+    registry.py        the 8 tool schemas (strict), Phase 1 allowlist, verified-customer set
+    validator.py       pre-invocation argument checks (missing slot → re-ask, tool not called)
+    throttle.py        FR-SEC-01 catalog throttle
+    tool_middleware.py allowlist → strip untrusted input → validate → auth gate → throttle → call → audit
+
+  security/            pii.py (masker + log filter), tokens.py (VoxCare-Session-Token, HS256)
+  observability/       audit.py (AuditWriter), otel.py (spans + ring buffer), logging.py (JSON, masked)
 
   session/
-    boundary.py        SessionBoundary: sessions, history, tool execution under customer scope
-    tools.py           the 7 model-visible tool schemas and their argument contracts
-    render.py          grounded answer text rendered from tool records
+    boundary.py        SessionBoundary: session records, tokens, history, turn handling, handoff, audit
+    dialogue.py        DialogueManager: verification, slots, pending writes, diagnosis, OPD, resume, LLM plan
+    intents.py         deterministic detectors (human request, OPD topics, write intents, dates)
+    render.py          answer text from tool envelopes + output guards (no write or ETA claims)
+    speech.py          voice rendering of the same answer for TTS
+    speculative.py     speculative-read guard (writes can never enter it)
+    activity.py        per-turn activity log: route, tool checks, audit rows, state changes, reply (masked)
+    tools.py           spoken order-code normalization; registry re-export
 
-  providers/
-    base.py            ProviderUnavailable, provider_status(), system prompt, message/tool shaping
-    asr.py             Deepgram Nova-2 (WebSocket) and Vosk (offline) — same event shape
-    llm.py             OpenAI Responses, chat-completions gateway, Anthropic fallback, cascade
-    tts.py             ElevenLabs Flash v2.5 (WebSocket) and Piper (offline, in-process) — same PCM contract
-    factories.py       select adapters from validated settings
-
-  domain/
-    seed.py            SeedOMS: orders, shipments, catalog, vouchers (fixtures, read-only)
-    policy.py          deterministic lexical retrieval over the policy corpus
-    data/policies.json the 9-clause fictional VoxCom policy corpus
+  http/                bootstrap.py (lifespan builds the runtime), routes.py, schemas.py
+  voice/               WebSocket voice session (protocol, connection, ASR events, evaluation, dispatch)
+  turns/               TurnController, baseline judge, Jev and OpenRouter adapters
+  providers/           ASR (Deepgram, Vosk), LLM (OpenAI, Anthropic, cascade, keyword planner), TTS (ElevenLabs, Piper)
 ```
 
-## Typed request flow (REST)
+## Turn pipeline
 
 ```text
-POST /api/sessions                 validate turn + provider settings → create session (CUST-001)
-POST /api/sessions/{id}/turns      handle_turn: plan tools → run allowlisted read-only tools → grounded text
-GET  /api/sessions/{id}/trace      bounded event ledger for the session
-POST /api/sessions/{id}/handoff    record a support request (never a live transfer)
-POST /api/sessions/{id}/reset      discard the session and create a fresh one
-GET  /api/config                   provider configuration, never credentials or endpoint URLs
+caller text (typed, or committed ASR final)
+  → SessionBoundary.handle_turn: token-bound session, PII-masked history, `turn` span (T1)
+  → DialogueManager: deterministic branches first (resume answer, verification, handoff offer,
+    pending write yes/no, withdrawal, diagnosis, human request, OPD topics, write intents),
+    otherwise the model plans tool calls (`llm` span, T2/T3)
+  → ToolMiddleware for each call (`tool:<name>` span, audit row)
+  → render_results: verbatim lines from domain/copy.py; guards drop any write or ETA claim
+    the envelopes do not support
+  → TurnResult (screen text) and spoken_reply (TTS, `tts` span T4/T5)
 ```
+
+## REST surface
+
+```text
+POST /session  (= POST /api/sessions)  {verified, fixture_session_id?} → session + VoxCare-Session-Token
+POST /api/sessions/{id}/token          refresh the token (≤ session TTL)
+POST /api/sessions/{id}/turns          typed turn (same path as voice turns)
+GET  /api/sessions/{id}/trace | /audit | /handoffs | /spans
+GET  /api/sessions/{id}/activity[?format=markdown]   the session activity log (operator view, export)
+POST /api/sessions/{id}/handoff        record a support request (never a live transfer)
+POST /api/sessions/{id}/reset          discard the session and create a fresh one (new token)
+GET  /api/config                       provider and store configuration, never credentials
+GET  /healthz[?wss=1]                  PostgreSQL, Redis, Chroma (+ WSS handshake ≤ 2 s); 503 when degraded
+```
+
+Every session route needs the token (`VoxCare-Session-Token` header or `Authorization: Bearer`); the voice socket takes it as `?token=` and closes with 4401 / 4404 otherwise.
 
 Typed turns never touch the turn judge: typed text has no microphone timing to judge.
 
@@ -79,6 +101,11 @@ reset / stop
 
 `SessionBoundary.handle_turn` is the single path for both typed and committed voice turns, so tools, scoping, auditing, and rendering never diverge.
 
+Two voice-only steps sit on either side of that path, both deterministic:
+
+- **In:** a committed transcript (`source="asr_final"`) passes through `normalize_spoken_order_codes` (`session/tools.py`) before planning. Spelled or misheard codes such as "o r d one zero zero two", "or rd one zero zero two" or "order forty five sixty seven" become `ORD-####`; exactly four digits must follow, so "order two TVs" is untouched. Each rewrite is traced as `SPOKEN_ORDER_CODE_NORMALIZED`. Typed text is never rewritten.
+- **Out:** the `turn` message carries the full grounded `assistant_text` for the screen, while TTS receives `spoken_reply(...)` (`session/speech.py`): the same tool outcomes rendered for listening. Policy answers speak the first sentence of the top-ranked clause verbatim, say how many more clauses apply, and point to the transcript for the full text; ISO and day/month/year dates become "October 15, 2026"; `VND` becomes "dong"; `ORD-1002` is read "O R D one zero zero two"; clause ids and SKU parentheticals are dropped. No fact is added. `text_sent_to_tts` records `spoken_chars`.
+
 ## Turn decisions
 
 `TurnController` (one per session) runs episodes fenced by `(session, turn_epoch, hold_episode_id, decision_request_id)`. A COMMIT requires a stable/final transcript, positive mic silence past a confidence-scaled confirm window, a complete *and* addressed judgment, and no holding-floor signal. Two non-commit verdicts or the absolute HOLD deadline degrade the episode to an explicit caller choice; a timeout or error never commits. Details: [TURN_CONTROL.md](TURN_CONTROL.md).
@@ -93,12 +120,13 @@ reset / stop
 | TTS | ElevenLabs Flash v2.5 | Piper offline (`VOXCARE_TTS_PROVIDER=piper`) | PCM16 mono 16 kHz chunks |
 | Turn decision | TypeSafe Jev (300 ms / 3000 ms) | OpenRouter Decisions (2500 ms / 9000 ms) | the same four Noul questions |
 
-`plan_turn` returns every tool call the model emitted, in order. Adapters ask for at most one call per turn (`parallel_tool_calls=False`) and fall back gracefully when a gateway rejects the parameter; the boundary executes up to `MAX_TOOL_CALLS_PER_TURN = 3` calls sequentially and composes one answer (a recorded handoff wins outright; otherwise fragments join in order and the outcome is the first non-ANSWERED outcome).
+`plan_turn` returns every tool call the model emitted, in order. Adapters allow several calls in one response (`parallel_tool_calls=True`; Anthropic `disable_parallel_tool_use=False`), because Scenario 1 needs lookup and tracking together and Scenario 7 three calls in order, and fall back gracefully when a gateway rejects the parameter; the boundary executes up to `MAX_TOOL_CALLS_PER_TURN = 3` calls sequentially and composes one answer (a recorded handoff wins outright; otherwise fragments join in order and the outcome is the first non-ANSWERED outcome).
 
 ## Data and honesty boundaries
 
-- Seven read-only tools: `lookup_order_details`, `track_shipment_status`, `retrieve_policy_clauses`, `search_catalog`, `compare_products`, `apply_voucher`, `escalate_to_human`. Unknown tools are rejected; write tools do not exist.
-- Order tools enforce the session customer server-side; another customer's order returns `OUT_OF_SCOPE` with no details.
-- The model only plans; spoken text is rendered from tool records (`session/render.py`).
-- `mask_pii` is applied to text sent to the LLM, the judge, and TTS, and to handoff/audit payloads. Stored history, live transcripts, and broadcasts keep the caller's raw words so the demo can show what was heard.
-- Bounds: 200 live sessions (oldest-touched evicted), 24 history messages per session, 500 trace events per session, 64 KiB request bodies, 64 KiB audio frames, 24 MiB audio per voice session.
+- Eight tools: `lookup_order_details`, `track_shipment_status`, `list_customer_orders` (G-3), `retrieve_policy_clauses`, `search_catalog`, `compare_products`, `apply_voucher`, `escalate_to_human`. Unknown tools and the future write tools are rejected by the allowlist; the model has no database access.
+- Order, shipment, catalog, history and handoff tools need a verified customer; another customer's order returns 403 `OUT_OF_SCOPE` with an `AUTH_SCOPE_VIOLATION` audit row and no details (FR-AUTH-02).
+- Answer text is rendered from tool envelopes (`session/render.py`) with the design's verbatim lines; the spoken form is a deterministic rewrite of it (`session/speech.py`). Output guards drop any write-success or delivery-date claim that no envelope supports.
+- Writes are previewed and recorded in Phase 1 (`VOXCARE_WRITE_MODE=record_only`); the guarded-write library runs end to end only against the fake OMS.
+- PII is masked in logs, audit rows, stored history and handoff packets (`security/pii.py`), and at every external-provider edge (`privacy.py`). Live transcripts on the caller's own screen keep the raw words.
+- Bounds: 200 live sessions, 24 history messages per session, 500 trace events per session, 64 KiB request bodies, 64 KiB audio frames, 24 MiB audio per voice session.

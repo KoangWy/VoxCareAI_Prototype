@@ -15,7 +15,11 @@ def test_config_and_session_report_missing_direct_providers(monkeypatch):
     with TestClient(api.app) as client:
         config = client.get("/api/config").json()
         session = client.post("/api/sessions").json()
-        turn = client.post(f"/api/sessions/{session['session_id']}/turns", json={"text": "Track ORD-1002"}).json()
+        turn = client.post(
+            f"/api/sessions/{session['session_id']}/turns",
+            headers={"VoxCare-Session-Token": session["token"]},
+            json={"text": "Track ORD-1002"},
+        ).json()
 
     assert config["voice_ready"] is False
     assert config["providers"]["conversation"]["configured"] is False
@@ -29,8 +33,10 @@ def test_reset_ends_prior_session_and_creates_fresh_scope(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     with TestClient(api.app) as client:
         old = client.post("/api/sessions").json()
-        new = client.post(f"/api/sessions/{old['session_id']}/reset").json()
-        old_lookup = client.get(f"/api/sessions/{old['session_id']}")
+        new = client.post(
+            f"/api/sessions/{old['session_id']}/reset", headers={"VoxCare-Session-Token": old["token"]}
+        ).json()
+        old_lookup = client.get(f"/api/sessions/{old['session_id']}", headers={"VoxCare-Session-Token": old["token"]})
 
     assert old["session_id"] != new["session_id"]
     assert old_lookup.status_code == 404
@@ -41,7 +47,7 @@ def test_voice_websocket_reports_missing_asr_without_fake_success(monkeypatch):
     monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
     with TestClient(api.app) as client:
         session = client.post("/api/sessions").json()
-        with client.websocket_connect(f"/ws/sessions/{session['session_id']}") as websocket:
+        with client.websocket_connect(f"/ws/sessions/{session['session_id']}?token={session['token']}") as websocket:
             assert websocket.receive_json()["type"] == "session"
             websocket.send_json({"type": "start", "sample_rate": 16_000, "channels": 1, "encoding": "pcm_s16le"})
             response = websocket.receive_json()
@@ -73,18 +79,32 @@ def test_handoff_endpoint_records_request_without_voice_or_provider(monkeypatch)
         monkeypatch.delenv(name, raising=False)
     with TestClient(api.app) as client:
         session = client.post("/api/sessions").json()
-        response = client.post(f"/api/sessions/{session['session_id']}/handoff", json={"reason": "r" * 200})
-        too_long = client.post(f"/api/sessions/{session['session_id']}/handoff", json={"reason": "r" * 201})
-        trace = client.get(f"/api/sessions/{session['session_id']}/trace").json()
+        response = client.post(
+            f"/api/sessions/{session['session_id']}/handoff",
+            headers={"VoxCare-Session-Token": session["token"]},
+            json={"reason": "r" * 200},
+        )
+        too_long = client.post(
+            f"/api/sessions/{session['session_id']}/handoff",
+            headers={"VoxCare-Session-Token": session["token"]},
+            json={"reason": "r" * 201},
+        )
+        trace = client.get(
+            f"/api/sessions/{session['session_id']}/trace", headers={"VoxCare-Session-Token": session["token"]}
+        ).json()
         missing = client.post("/api/sessions/unknown/handoff", json={}).status_code
 
     assert response.status_code == 200
     body = response.json()
     assert body["outcome"] == "HANDOFF_REQUEST_RECORDED"
-    assert body["status"] == "REQUEST_RECORDED"
-    assert "does not make a live transfer" in body["message"]
+    assert body["status"] == "HANDOFF_REQUEST_RECORDED"
+    assert body["ticket_number"].startswith("TICK-CS-")
+    assert body["message"].startswith("I have recorded your request to speak with a customer service representative")
+    assert "transfer" not in body["message"] and "connecting you" not in body["message"]
     audit = next(item for item in trace["events"] if item.get("action_name") == "HANDOFF_REQUEST_RECORDED")
-    assert audit["request_payload_json"] == {"reason": "r" * 200, "context": ""}
+    assert audit["request_payload_json"]["tool_name"] == "escalate_to_human"
+    assert audit["request_payload_json"]["trigger_reason"] == "CUSTOMER_REQUESTED_ESCALATION"
+    assert audit["response_payload_json"]["agent_id"] is None
     assert missing == 404
     assert too_long.status_code == 422
 

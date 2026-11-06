@@ -27,12 +27,14 @@ class ToolOutcome:
 @dataclass(frozen=True)
 class SessionView:
     session_id: str
-    customer_id: str
+    customer_id: str | None
     locale: str
     turn_epoch: int
     state: str
     provider_availability: Mapping[str, bool]
     created_at: str
+    verified: bool = True
+    fixture: bool = False
 
 
 @dataclass(frozen=True)
@@ -52,9 +54,23 @@ class TurnResult:
     is_fictional: bool | None = None
     clause_version: str | None = None
     missing_context: Sequence[str] = ()
+    spoken_text: str | None = None
+    tool_calls: Sequence[Mapping[str, Any]] = ()
+    customer_id: str | None = None
+    binding_changed: bool = False
+    activity: Mapping[str, Any] | None = None  # this turn's entry in the session activity log
 
 
 MAX_TOOL_CALLS_PER_TURN = 3
+
+
+class PlannedCalls(list):  # type: ignore[type-arg]
+    """The tool calls a model proposed, in order, plus any text it wrote (``note``).
+
+    The note is diagnostics for the operator's activity log only: it is masked there and never spoken.
+    """
+
+    note: str | None = None
 
 
 class DialogueProvider(Protocol):

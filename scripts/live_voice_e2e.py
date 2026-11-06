@@ -353,6 +353,34 @@ def scenario_echo(harness: Harness, client, assistant_audio: bytes, clock: list[
         )
 
 
+def wait_setup_reply_audio(harness: Harness, name: str, socket, turn: dict) -> dict | None:
+    """The setup turn must be answered and start speaking; otherwise fail now instead of blocking.
+
+    TestClient's receive has no timeout, so waiting for an ``audio_start`` that
+    an unanswered turn never sends would hang until the whole-run watchdog.
+    """
+    result = turn["result"]
+    if result.get("outcome") != "ANSWERED" or not result.get("assistant_text"):
+        harness.record(name, False, f"setup turn outcome={result.get('outcome')}; no reply to speak over")
+        return None
+    turn_id = result["turn_id"]
+    try:
+        start, _ = receive_until(
+            socket,
+            lambda m: (
+                (m.get("type") == "audio_start" and m.get("turn_id") == turn_id)
+                or m.get("type") == "provider_unavailable"
+            ),
+        )
+    except AssertionError as exc:
+        harness.record(name, False, str(exc)[:120])
+        return None
+    if start["type"] != "audio_start":
+        harness.record(name, False, f"setup reply not spoken: {start.get('provider')}/{start.get('error')}")
+        return None
+    return start
+
+
 def scenario_backchannel(harness: Harness, client, tts, clock: list[float]) -> None:
     print("== Scenario 4: backchannel during assistant speech (VOXCARE_BARGE_IN=semantic) ==", flush=True)
     os.environ["VOXCARE_BARGE_IN"] = "semantic"
@@ -376,12 +404,13 @@ def scenario_backchannel(harness: Harness, client, tts, clock: list[float]) -> N
         harness.llm_turns += 1
         try:
             turn, _ = receive_until(socket, lambda m: m.get("type") == "turn")
-            turn_id = turn["result"]["turn_id"]
         except AssertionError as exc:
             harness.record("backchannel.setup_commit", False, str(exc)[:120])
             return
         # Start collecting audio, then speak a backchannel while it plays.
-        start, _ = receive_until(socket, lambda m: m.get("type") == "audio_start" and m.get("turn_id") == turn_id)
+        start = wait_setup_reply_audio(harness, "backchannel.setup_commit", socket, turn)
+        if start is None:
+            return
         backchannel = asyncio.run(synth_16k(tts, UTTERANCES["backchannel"]))
         socket.send_json(
             {
@@ -498,11 +527,12 @@ def scenario_interruption(harness: Harness, client, tts, clock: list[float]) -> 
         harness.llm_turns += 1
         try:
             turn, _ = receive_until(socket, lambda m: m.get("type") == "turn")
-            turn_id = turn["result"]["turn_id"]
         except AssertionError as exc:
             harness.record("interruption.setup_commit", False, str(exc)[:120])
             return
-        start, _ = receive_until(socket, lambda m: m.get("type") == "audio_start" and m.get("turn_id") == turn_id)
+        start = wait_setup_reply_audio(harness, "interruption.setup_commit", socket, turn)
+        if start is None:
+            return
         grab = asyncio.run(synth_16k(tts, UTTERANCES["floor_grab"]))
         socket.send_json(
             {
@@ -552,10 +582,17 @@ def main() -> int:
     from dotenv import load_dotenv
 
     load_dotenv(APP_ROOT / ".env", override=False)
+    from voxcare.config import load_provider_settings
+
+    settings = load_provider_settings()
+    mode = (os.getenv("VOXCARE_TURN_MODE") or "baseline").strip().lower()
+    if settings.conversation_provider == "anthropic":
+        llm = f"anthropic/{settings.anthropic_model}"
+    else:
+        llm = f"openai-{settings.openai_transport}/{settings.openai_model}"
+    judge = settings.judge_model(mode) if mode in {"jev", "openrouter"} else "baseline"
     print(
-        f"turn_mode={os.getenv('VOXCARE_TURN_MODE')} asr={os.getenv('VOXCARE_ASR_PROVIDER')} "
-        f"tts={os.getenv('VOXCARE_TTS_PROVIDER')} transport={os.getenv('VOXCARE_OPENAI_TRANSPORT')} "
-        f"llm={os.getenv('VOXCARE_OPENAI_MODEL')} judge={os.getenv('VOXCARE_JEV_MODEL')}",
+        f"turn_mode={mode} asr={settings.asr_provider} tts={settings.tts_provider} llm={llm} judge={judge}",
         flush=True,
     )
 

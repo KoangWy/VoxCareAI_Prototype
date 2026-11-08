@@ -1,6 +1,6 @@
-"""Streaming ASR connections: Deepgram Nova-2 live adapter + offline Vosk adapter.
+"""Streaming ASR connections: Deepgram Nova-2 live, Mistral Voxtral realtime, and offline Vosk adapters.
 
-Both emit the same normalized event dicts (``transcript`` /
+All emit the same normalized event dicts (``transcript`` /
 ``provider_error`` / ``SpeechStarted`` / ``UtteranceEnd``) so the voice
 socket flow is unchanged whichever provider is selected.
 """
@@ -8,10 +8,12 @@ socket flow is unchanged whichever provider is selected.
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib.util
 import json
 import logging
 import os
+import socket
 from collections.abc import AsyncIterator, Callable
 from functools import lru_cache
 from pathlib import Path
@@ -143,6 +145,157 @@ class DeepgramConnection:
             raise
         except Exception as exc:
             logger.warning("Deepgram stream ended", extra={"error_type": type(exc).__name__})
+            await self._events.put({"type": "provider_error", "error_type": type(exc).__name__})
+        finally:
+            await self._events.put(None)
+
+
+class MistralConnection:
+    """Voxtral realtime WebSocket adapter; audio is PCM16 mono at 16 kHz.
+
+    The service streams text deltas and only emits a full ``transcription.done``
+    after an ``input_audio.flush``. Deltas become interim transcripts; a
+    ``turn.end`` (server turn detection) or :meth:`finalize` triggers a flush and
+    the resulting ``transcription.done`` becomes the final transcript. The local
+    VAD quiet signal also flushes (``finalize_on_quiet``), because room noise can
+    keep the server from ever declaring the turn ended.
+    """
+
+    finalize_on_quiet = True
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str = "voxtral-mini-transcribe-realtime-3-0",
+        language: str = "en",
+        streaming_delay_ms: int = 240,
+        connector: Callable[..., Any] | None = None,
+    ) -> None:
+        self.api_key = api_key
+        self.model = model
+        self.language = language
+        self.streaming_delay_ms = streaming_delay_ms
+        self._connector = connector or websockets.connect
+        self.socket = None
+        self._receive_task: asyncio.Task | None = None
+        self._events: asyncio.Queue[dict[str, object] | None] = asyncio.Queue(maxsize=100)
+        self._sequence = 0
+        self._segment_id = 0.0
+        self._partial = ""
+
+    @classmethod
+    def from_env(cls) -> MistralConnection:
+        key = os.getenv("MISTRAL_API_KEY", "").strip()
+        if not key:
+            raise ProviderUnavailable("Mistral API key is not configured", code="MISTRAL_NOT_CONFIGURED")
+        return cls(api_key=key, model=load_provider_settings().mistral_asr_model)
+
+    async def connect(self) -> None:
+        self.socket = await self._connector(
+            f"wss://api.mistral.ai/v1/audio/transcriptions/realtime?{urlencode({'model': self.model})}",
+            additional_headers={"Authorization": f"Bearer {self.api_key}"},
+            max_size=1_048_576,
+            ping_interval=20,
+            open_timeout=8,
+            # api.mistral.ai's IPv6 route hangs the upgrade on some networks; IPv4 answers in ~1 s.
+            family=socket.AF_INET,
+        )
+        await self.socket.send(
+            json.dumps(
+                {
+                    "type": "session.update",
+                    "session": {
+                        "audio_format": {"encoding": "pcm_s16le", "sample_rate": 16000},
+                        "target_streaming_delay_ms": self.streaming_delay_ms,
+                        "language": self.language,
+                        "turn_detection": {"min_silence_ms": 500},
+                    },
+                }
+            )
+        )
+        self._receive_task = asyncio.create_task(self._receive())
+
+    async def send_audio(self, pcm16: bytes) -> None:
+        if self.socket is None:
+            raise ProviderUnavailable("Mistral connection is not open")
+        if len(pcm16) > 64 * 1024:
+            raise ValueError("audio frame too large")
+        await self.socket.send(json.dumps({"type": "input_audio.append", "audio": base64.b64encode(pcm16).decode()}))
+
+    async def finalize(self) -> None:
+        if self.socket is not None:
+            await self.socket.send(json.dumps({"type": "input_audio.flush"}))
+
+    async def events(self) -> AsyncIterator[dict[str, object]]:
+        while True:
+            item = await self._events.get()
+            if item is None:
+                return
+            yield item
+
+    async def close(self) -> None:
+        if self.socket is not None:
+            try:
+                await self.socket.send(json.dumps({"type": "input_audio.end"}))
+                await self.socket.close()
+            finally:
+                self.socket = None
+        if self._receive_task is not None:
+            self._receive_task.cancel()
+            await asyncio.gather(self._receive_task, return_exceptions=True)
+            self._receive_task = None
+
+    async def _emit_transcript(self, text: str, *, final: bool) -> None:
+        self._sequence += 1
+        await self._events.put(
+            {
+                "type": "transcript",
+                "text": text,
+                "is_final": final,
+                "speech_final": final,
+                "start": self._segment_id + 1.0,
+                "duration": None,
+                "sequence": self._sequence,
+            }
+        )
+
+    async def _receive(self) -> None:
+        try:
+            assert self.socket is not None  # noqa: S101 - connect() invariant, not a security check
+            async for raw in self.socket:
+                if not isinstance(raw, str):
+                    continue
+                try:
+                    message = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                kind = message.get("type")
+                if kind == "transcription.text.delta":
+                    delta = str(message.get("text", ""))
+                    if not delta:
+                        continue
+                    if not self._partial:
+                        await self._events.put({"type": "SpeechStarted"})
+                    self._partial += delta
+                    text = self._partial.strip()
+                    if text:
+                        await self._emit_transcript(text, final=False)
+                elif kind == "transcription.done":
+                    text = str(message.get("text", "")).strip() or self._partial.strip()
+                    self._partial = ""
+                    if text:
+                        await self._emit_transcript(text, final=True)
+                        self._segment_id += 1.0
+                elif kind == "turn.end":
+                    await self.finalize()
+                    await self._events.put({"type": "UtteranceEnd"})
+                elif kind == "error":
+                    await self._events.put({"type": "provider_error", "error_type": "MistralStreamError"})
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Mistral stream ended", extra={"error_type": type(exc).__name__})
             await self._events.put({"type": "provider_error", "error_type": type(exc).__name__})
         finally:
             await self._events.put(None)
@@ -281,4 +434,4 @@ class VoskConnection:
         await self._events.put(None)
 
 
-AsrConnection = DeepgramConnection | VoskConnection
+AsrConnection = DeepgramConnection | MistralConnection | VoskConnection

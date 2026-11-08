@@ -26,8 +26,8 @@ from .turns.controller import TurnConfig
 
 VALID_TURN_MODES = ("baseline", "jev", "openrouter")
 VALID_BARGE_IN_MODES = ("off", "semantic")
-VALID_ASR_PROVIDERS = ("deepgram", "vosk")
-VALID_TTS_PROVIDERS = ("elevenlabs", "piper")
+VALID_ASR_PROVIDERS = ("deepgram", "vosk", "mistral")
+VALID_TTS_PROVIDERS = ("elevenlabs", "piper", "deepinfra")
 VALID_OPENAI_TRANSPORTS = ("responses", "chat")
 
 TYPESAFE_JUDGE_TIMEOUT_MS = 300
@@ -125,6 +125,10 @@ class ProviderSettings:
     anthropic_model: str = "claude-haiku-5-5"
     anthropic_base_url: str | None = None
     elevenlabs_model: str = "eleven_flash_v2_5"
+    mistral_asr_model: str = "voxtral-mini-transcribe-realtime-3-0"
+    deepinfra_tts_model: str = "XiaomiMiMo/MiMo-V2.5-tts"
+    deepinfra_voice: str | None = None
+    deepinfra_sample_rate: int = 24_000
     vosk_model: str | None = None
     piper_model: str | None = None
     jev_model: str | None = None
@@ -204,6 +208,16 @@ def load_provider_settings(env: Mapping[str, str] | None = None) -> ProviderSett
         anthropic_base_url=_parse_text(get("VOXCARE_ANTHROPIC_BASE_URL")),
         elevenlabs_model=_parse_text(get("VOXCARE_ELEVENLABS_MODEL"), defaults.elevenlabs_model)
         or defaults.elevenlabs_model,
+        mistral_asr_model=_parse_text(get("VOXCARE_MISTRAL_ASR_MODEL"), defaults.mistral_asr_model)
+        or defaults.mistral_asr_model,
+        deepinfra_tts_model=_parse_text(get("VOXCARE_DEEPINFRA_TTS_MODEL"), defaults.deepinfra_tts_model)
+        or defaults.deepinfra_tts_model,
+        deepinfra_voice=_parse_text(get("VOXCARE_DEEPINFRA_VOICE")),
+        deepinfra_sample_rate=_parse_positive_int(
+            get("VOXCARE_DEEPINFRA_SAMPLE_RATE"),
+            field="VOXCARE_DEEPINFRA_SAMPLE_RATE",
+            default=defaults.deepinfra_sample_rate,
+        ),
         vosk_model=_parse_text(get("VOXCARE_VOSK_MODEL")),
         piper_model=_parse_text(get("VOXCARE_PIPER_MODEL")),
         jev_model=_parse_text(get("VOXCARE_JEV_MODEL")),

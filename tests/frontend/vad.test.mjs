@@ -116,3 +116,13 @@ test('sanitizeVadConfig clamps tuning to safe bounds and drops unknowns', () => 
   assert.ok(!('bogus' in clean));
   assert.ok(!('dipGraceMs' in clean));
 });
+
+test('routeVadOnset forwards vad_quiet so the server can judge end of turn', async () => {
+  const { routeVadOnset } = await import('../../static/vad.js');
+  const quiet = { type: 'vad_quiet', segment_id: 's1', client_monotonic_ms: 1000, speech_end_monotonic_ms: 350, silence_ms: 650 };
+  for (const activeAudio of [null, { turnId: 'T1' }]) {
+    const routed = routeVadOnset(quiet, { activeAudio, nowMs: 1000, bargeInMode: 'off' });
+    assert.equal(routed.action, 'send');
+    assert.deepEqual(routed.event, quiet);
+  }
+});

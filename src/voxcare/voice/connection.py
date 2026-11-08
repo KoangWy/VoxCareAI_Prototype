@@ -282,6 +282,8 @@ class VoiceConnection:
             silence_ms=silence,
             client_clock=state.client_clock,
         )
+        if state.asr is not None and getattr(state.asr, "finalize_on_quiet", False):
+            await state.asr.finalize()
         schedule_after_quiet(state, self.evaluate)
 
     async def on_recovery_action(self, kind: str, control: dict) -> None:  # type: ignore[type-arg]

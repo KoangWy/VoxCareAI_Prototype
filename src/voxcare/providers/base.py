@@ -83,6 +83,13 @@ def _asr_status(settings: ProviderSettings) -> ProviderStatus:
             Path(path).name if path else None,
             "Offline streaming English ASR; demo deviation from the design provider set",
         )
+    if settings.asr_provider == "mistral":
+        return ProviderStatus(
+            "Mistral Voxtral realtime",
+            _has_key("MISTRAL_API_KEY"),
+            settings.mistral_asr_model,
+            "Streaming ASR over WebSocket with server turn detection",
+        )
     return ProviderStatus(
         "Deepgram Nova-2", _has_key("DEEPGRAM_API_KEY"), "nova-2", "Streaming English ASR over WebSocket"
     )
@@ -105,6 +112,13 @@ def _tts_status(settings: ProviderSettings) -> ProviderStatus:
             bool(path) and Path(path).is_file(),
             Path(path).name if path else None,
             "Offline neural TTS, per-sentence PCM16; demo deviation from the design provider set",
+        )
+    if settings.tts_provider == "deepinfra":
+        return ProviderStatus(
+            "DeepInfra TTS",
+            _has_key("DEEPINFRA_API_KEY"),
+            settings.deepinfra_tts_model,
+            "Streamed PCM via OpenAI-compatible speech endpoint, resampled to PCM16 16 kHz",
         )
     return ProviderStatus(
         "ElevenLabs Flash v2.5",

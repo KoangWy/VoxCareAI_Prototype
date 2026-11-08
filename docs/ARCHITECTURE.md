@@ -87,10 +87,10 @@ reset / stop
 
 | Role | Design provider | Demo alternative (env-selected) | Shared contract |
 | --- | --- | --- | --- |
-| ASR | Deepgram Nova-2 | Vosk offline (`VOXCARE_ASR_PROVIDER=vosk`) | normalized transcript events |
+| ASR | Deepgram Nova-2 | Vosk offline (`VOXCARE_ASR_PROVIDER=vosk`); Mistral Voxtral realtime (`=mistral`, server turn detection, plus a flush on local VAD quiet) | normalized transcript events |
 | Conversation | OpenAI Responses `gpt-6-luna` | chat-completions gateway (`VOXCARE_OPENAI_TRANSPORT=chat`) | `plan_turn` → ordered tool calls |
 | Fallback | Anthropic `claude-haiku-5-5` | — | sticky after 2 retryable failures |
-| TTS | ElevenLabs Flash v2.5 | Piper offline (`VOXCARE_TTS_PROVIDER=piper`) | PCM16 mono 16 kHz chunks |
+| TTS | ElevenLabs Flash v2.5 | Piper offline (`VOXCARE_TTS_PROVIDER=piper`); DeepInfra OpenAI-compatible `/audio/speech` (`=deepinfra`, streamed PCM resampled to 16 kHz) | PCM16 mono 16 kHz chunks |
 | Turn decision | TypeSafe Jev (300 ms / 3000 ms) | OpenRouter Decisions (2500 ms / 9000 ms) | the same four Noul questions |
 
 `plan_turn` returns every tool call the model emitted, in order. Adapters ask for at most one call per turn (`parallel_tool_calls=False`) and fall back gracefully when a gateway rejects the parameter; the boundary executes up to `MAX_TOOL_CALLS_PER_TURN = 3` calls sequentially and composes one answer (a recorded handoff wins outright; otherwise fragments join in order and the outcome is the first non-ANSWERED outcome).

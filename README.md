@@ -87,8 +87,8 @@ All settings are environment variables, read from `.env` at startup; [`.env.exam
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `VOXCARE_ASR_PROVIDER` | `deepgram` | `deepgram` or `vosk` (+ `VOXCARE_VOSK_MODEL`) |
-| `VOXCARE_TTS_PROVIDER` | `elevenlabs` | `elevenlabs` or `piper` (+ `VOXCARE_PIPER_MODEL`) |
+| `VOXCARE_ASR_PROVIDER` | `deepgram` | `deepgram`, `vosk` (+ `VOXCARE_VOSK_MODEL`), or `mistral` — Voxtral realtime over WebSocket (+ `MISTRAL_API_KEY`, `VOXCARE_MISTRAL_ASR_MODEL`) |
+| `VOXCARE_TTS_PROVIDER` | `elevenlabs` | `elevenlabs`, `piper` (+ `VOXCARE_PIPER_MODEL`), or `deepinfra` — OpenAI-compatible `/audio/speech`, streamed PCM (+ `DEEPINFRA_API_KEY`, `VOXCARE_DEEPINFRA_TTS_MODEL`, `VOXCARE_DEEPINFRA_SAMPLE_RATE`, `VOXCARE_DEEPINFRA_VOICE`) |
 | `VOXCARE_OPENAI_TRANSPORT` | `responses` | `responses` (OpenAI Responses API) or `chat` (chat-completions gateway) |
 | `VOXCARE_OPENAI_MODEL`, `VOXCARE_OPENAI_BASE_URL` | `gpt-6-luna`, — | Conversation model and endpoint |
 | `VOXCARE_ANTHROPIC_MODEL` | `claude-haiku-5-5` | Fallback model after two consecutive retryable primary failures |

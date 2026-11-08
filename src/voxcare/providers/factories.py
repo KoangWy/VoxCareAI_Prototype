@@ -10,10 +10,10 @@ from __future__ import annotations
 import os
 
 from ..config import ConfigError, ProviderSettings, load_provider_settings
-from .asr import AsrConnection, DeepgramConnection, VoskConnection
+from .asr import AsrConnection, DeepgramConnection, MistralConnection, VoskConnection
 from .base import ProviderUnavailable
 from .llm import AnthropicMessagesAdapter, CascadeDialogueProvider, OpenAIChatCompletionsAdapter, OpenAIResponsesAdapter
-from .tts import ElevenLabsTTS, PiperTTS, SpeechSynthesizer
+from .tts import DeepInfraTTS, ElevenLabsTTS, PiperTTS, SpeechSynthesizer
 
 
 def _settings(code: str) -> ProviderSettings:
@@ -24,14 +24,20 @@ def _settings(code: str) -> ProviderSettings:
 
 
 def asr_connection_from_env() -> AsrConnection:
-    if _settings("ASR_PROVIDER_UNSUPPORTED").asr_provider == "vosk":
+    provider = _settings("ASR_PROVIDER_UNSUPPORTED").asr_provider
+    if provider == "vosk":
         return VoskConnection.from_env()
+    if provider == "mistral":
+        return MistralConnection.from_env()
     return DeepgramConnection.from_env()
 
 
 def tts_from_env() -> SpeechSynthesizer:
-    if _settings("TTS_PROVIDER_UNSUPPORTED").tts_provider == "piper":
+    provider = _settings("TTS_PROVIDER_UNSUPPORTED").tts_provider
+    if provider == "piper":
         return PiperTTS.from_env()
+    if provider == "deepinfra":
+        return DeepInfraTTS.from_env()
     return ElevenLabsTTS.from_env()
 
 

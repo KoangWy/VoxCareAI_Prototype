@@ -448,3 +448,85 @@ class DemoStackSelectionTests(unittest.TestCase):
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+
+
+class MistralDeepInfraAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_mistral_deltas_become_interim_then_flush_final(self):
+        from voxcare.providers import MistralConnection
+
+        class Socket:
+            def __init__(self):
+                self.sent = []
+                self.frames = [
+                    json.dumps({"type": "transcription.text.delta", "text": "Hello"}),
+                    json.dumps({"type": "transcription.text.delta", "text": " there"}),
+                    json.dumps({"type": "turn.end"}),
+                    json.dumps({"type": "transcription.done", "text": "Hello there"}),
+                ]
+
+            async def send(self, data):
+                self.sent.append(json.loads(data))
+
+            def __aiter__(self):
+                return self._iter()
+
+            async def _iter(self):
+                for frame in self.frames:
+                    yield frame
+
+            async def close(self):
+                pass
+
+        socket = Socket()
+
+        async def connector(*args, **kwargs):
+            return socket
+
+        conn = MistralConnection(api_key="unit-test", connector=connector)
+        await conn.connect()
+        events = []
+        async for event in conn.events():
+            events.append(event)
+        kinds = [(e["type"], e.get("text"), e.get("is_final")) for e in events]
+        self.assertEqual(kinds[0], ("SpeechStarted", None, None))
+        self.assertIn(("transcript", "Hello there", False), kinds)
+        self.assertIn(("transcript", "Hello there", True), kinds)
+        self.assertEqual(socket.sent[0]["type"], "session.update")
+        self.assertIn({"type": "input_audio.flush"}, socket.sent)
+
+    async def test_deepinfra_tts_streams_pcm_and_resamples_continuously(self):
+        import struct
+
+        import httpx
+
+        from voxcare.providers import DeepInfraTTS
+        from voxcare.providers.tts import _StreamResampler, resample_pcm16_to_16k
+
+        pcm = struct.pack("<8h", *range(0, 8000, 1000)) * 300
+        seen = {}
+
+        def handler(request):
+            seen.update(json.loads(request.content))
+            return httpx.Response(200, content=pcm)
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        tts = DeepInfraTTS(api_key="unit-test", client=client)
+        out = b"".join([chunk async for chunk in tts.stream("Hi there.")])
+        self.assertEqual(seen["model"], "XiaomiMiMo/MiMo-V2.5-tts")
+        self.assertEqual(seen["response_format"], "pcm")
+        self.assertIs(seen["stream"], True)
+        self.assertAlmostEqual(len(out), len(pcm) * 2 / 3, delta=8)
+        # odd-sized chunking must give the same samples as one-shot resampling
+        resampler = _StreamResampler(24000)
+        pieces = b"".join(resampler.process(pcm[i : i + 777]) for i in range(0, len(pcm), 777))
+        self.assertEqual(pieces[:2000], resample_pcm16_to_16k(pcm, 24000)[:2000])
+        await client.aclose()
+
+
+class FinalizeOnQuietTests(unittest.TestCase):
+    def test_only_mistral_flushes_on_local_quiet(self):
+        from voxcare.providers import DeepgramConnection, MistralConnection
+
+        self.assertTrue(MistralConnection.finalize_on_quiet)
+        self.assertFalse(getattr(DeepgramConnection, "finalize_on_quiet", False))
+        self.assertFalse(getattr(VoskConnection, "finalize_on_quiet", False))

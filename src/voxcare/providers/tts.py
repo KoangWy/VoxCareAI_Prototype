@@ -1,6 +1,6 @@
-"""Streaming TTS adapters: ElevenLabs Flash v2.5 and offline Piper.
+"""Streaming TTS adapters: ElevenLabs Flash v2.5, DeepInfra hosted models, and offline Piper.
 
-Both stream PCM16 mono 16 kHz chunks — the playout contract the browser
+All stream PCM16 mono 16 kHz chunks — the playout contract the browser
 expects — after applying the shared deterministic PII mask.
 """
 
@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
+import httpx
 import websockets
 
 from ..config import ConfigError, load_provider_settings
@@ -208,9 +209,108 @@ class PiperTTS:
                 yield chunk
 
 
-SpeechSynthesizer = ElevenLabsTTS | PiperTTS
+class _StreamResampler:
+    """Chunk-by-chunk linear resample of PCM16 mono to 16 kHz, continuous across chunk boundaries."""
+
+    def __init__(self, source_rate: int) -> None:
+        self.step = source_rate / OUTPUT_SAMPLE_RATE
+        self.identity = source_rate == OUTPUT_SAMPLE_RATE
+        self.position = 0.0
+        self.tail: list[int] = []
+        self.odd = b""
+
+    def process(self, chunk: bytes) -> bytes:
+        data = self.odd + chunk
+        self.odd = data[len(data) - len(data) % 2 :]
+        data = data[: len(data) - len(data) % 2]
+        if self.identity or not data:
+            return data
+        incoming = array("h")
+        incoming.frombytes(data)
+        samples = self.tail + list(incoming)
+        out = array("h")
+        while int(self.position) + 1 < len(samples):
+            left = int(self.position)
+            fraction = self.position - left
+            value = samples[left] * (1.0 - fraction) + samples[left + 1] * fraction
+            out.append(int(max(-32768, min(32767, round(value)))))
+            self.position += self.step
+        drop = int(self.position)
+        self.tail = samples[drop:]
+        self.position -= drop
+        return out.tobytes()
+
+
+class DeepInfraTTS:
+    """DeepInfra hosted TTS through the OpenAI-compatible ``/v1/openai/audio/speech`` endpoint.
+
+    Requests ``stream: true`` with raw PCM16 so the first audio arrives while the
+    rest is still being generated; each chunk is resampled to 16 kHz as it lands.
+    """
+
+    URL = "https://api.deepinfra.com/v1/openai/audio/speech"
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str = "XiaomiMiMo/MiMo-V2.5-tts",
+        voice: str | None = None,
+        sample_rate: int = 24_000,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self.api_key = api_key
+        self.model = model
+        self.voice = voice
+        self.sample_rate = sample_rate
+        self._client = client
+
+    @classmethod
+    def from_env(cls) -> DeepInfraTTS:
+        key = os.getenv("DEEPINFRA_API_KEY", "").strip()
+        if not key:
+            raise ProviderUnavailable("DeepInfra API key is not configured", code="DEEPINFRA_NOT_CONFIGURED")
+        settings = _settings()
+        return cls(
+            api_key=key,
+            model=settings.deepinfra_tts_model,
+            voice=settings.deepinfra_voice,
+            sample_rate=settings.deepinfra_sample_rate,
+        )
+
+    async def warm(self) -> None:
+        """Nothing to preload for a hosted voice."""
+
+    async def stream(self, text: str) -> AsyncIterator[bytes]:
+        text = mask_pii(text).strip()
+        if not text or len(text) > MAX_TTS_CHARS:
+            raise ValueError("TTS text length is invalid")
+        body: dict[str, Any] = {"model": self.model, "input": text, "response_format": "pcm", "stream": True}
+        if self.voice:
+            body["voice"] = self.voice
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        resampler = _StreamResampler(self.sample_rate)
+        client = self._client or httpx.AsyncClient(timeout=httpx.Timeout(20, read=30))
+        try:
+            async with client.stream("POST", self.URL, json=body, headers=headers) as response:
+                response.raise_for_status()
+                async for chunk in response.aiter_bytes():
+                    pcm = resampler.process(chunk)
+                    if pcm:
+                        yield pcm
+        except httpx.HTTPError as exc:
+            raise ProviderUnavailable(
+                f"DeepInfra TTS request failed: {type(exc).__name__}", code="DEEPINFRA_TTS_FAILED"
+            ) from None
+        finally:
+            if self._client is None:
+                await client.aclose()
+
+
+SpeechSynthesizer = ElevenLabsTTS | PiperTTS | DeepInfraTTS
 
 __all__ = [
+    "DeepInfraTTS",
     "ElevenLabsTTS",
     "PiperTTS",
     "SpeechSynthesizer",

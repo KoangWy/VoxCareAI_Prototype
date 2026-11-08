@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
-from .asr import AsrConnection, DeepgramConnection, VoskConnection
+from .asr import AsrConnection, DeepgramConnection, MistralConnection, VoskConnection
 from .base import SYSTEM_PROMPT, ProviderStatus, ProviderUnavailable, provider_status
 from .factories import asr_connection_from_env, conversation_factory_from_env, tts_from_env
 from .llm import AnthropicMessagesAdapter, CascadeDialogueProvider, OpenAIChatCompletionsAdapter, OpenAIResponsesAdapter
-from .tts import ElevenLabsTTS, PiperTTS, SpeechSynthesizer
+from .tts import DeepInfraTTS, ElevenLabsTTS, PiperTTS, SpeechSynthesizer
 
 __all__ = [
     "SYSTEM_PROMPT",
     "AnthropicMessagesAdapter",
     "AsrConnection",
     "CascadeDialogueProvider",
+    "DeepInfraTTS",
     "DeepgramConnection",
     "ElevenLabsTTS",
+    "MistralConnection",
     "OpenAIChatCompletionsAdapter",
     "OpenAIResponsesAdapter",
     "PiperTTS",

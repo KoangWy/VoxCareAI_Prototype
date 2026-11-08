@@ -291,6 +291,8 @@ export class LocalVad {
  * traceLabel, traceDetail }`.
  */
 export function routeVadOnset(onsetEvent, { activeAudio, nowMs, echoUntilMs = 0, bargeInMode = 'off' } = {}) {
+  // vad_quiet is a plain observation: it has no echo/barge-in semantics, so it always goes through.
+  if (onsetEvent?.type === 'vad_quiet') return { action: 'send', event: onsetEvent };
   if (!onsetEvent || onsetEvent.type !== 'vad_speech_start') return { action: 'drop-not-onset' };
   if (activeAudio && bargeInMode === 'semantic') {
     return { action: 'send', event: { ...onsetEvent, agent_speaking: true } };
